@@ -1,0 +1,56 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.3'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.tekion'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-data-neo4j'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    //lombok
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // JSON Processing
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+
+    // NEO4J Driver
+    implementation 'org.neo4j.driver:neo4j-java-driver:5.14.0'
+
+
+    // LangChain4j BOM for version management
+    implementation platform('dev.langchain4j:langchain4j-bom:0.35.0')
+    
+    // LangChain4j for LLM integration
+    implementation 'dev.langchain4j:langchain4j'
+    implementation 'dev.langchain4j:langchain4j-open-ai'
+    implementation 'dev.langchain4j:langchain4j-voyage-ai'
+
+    // Apache Commons
+    implementation 'org.apache.commons:commons-lang3:3.12.0'
+    // Spring async and AOP support
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
+    implementation 'commons-io:commons-io:2.11.0'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
