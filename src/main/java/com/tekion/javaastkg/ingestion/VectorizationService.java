@@ -34,7 +34,7 @@ public class VectorizationService {
     @org.springframework.beans.factory.annotation.Value("${ingestion.batch.size:50}")
     private int batchSize;
 
-    @org.springframework.beans.factory.annotation.Value("${llm.embeddings.dimension:1536}")
+    @org.springframework.beans.factory.annotation.Value("${llm.voyage.dimension}")
     private int embeddingDimension;
 
     @Autowired
