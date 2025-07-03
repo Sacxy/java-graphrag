@@ -1,7 +1,8 @@
 package com.tekion.javaastkg.controller;
 
 import com.tekion.javaastkg.ingestion.*;
-import com.tekion.javaastkg.model.SpoonAST;
+import com.tekion.javaastkg.model.AnalysisResult;
+import com.tekion.javaastkg.model.GraphMetadata;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -85,21 +86,75 @@ public class IngestionScheduler {
             // Step 2: Fetch AST from Spoon (polling mechanism)
             log.info("Step 1/4: Starting AST analysis with Spoon service...");
             log.info("SpoonUrl path: {}", spoonUrl);
-            SpoonAST ast = spoonClient.fetchAST(spoonUrl);
+            AnalysisResult analysisResult = spoonClient.fetchAST(spoonUrl);
 
-            if (ast == null || (ast.getClasses().isEmpty() && ast.getMethods().isEmpty())) {
-                log.warn("No AST data received from Spoon service");
+            if (analysisResult == null || 
+                (analysisResult.getNodes() == null || analysisResult.getNodes().isEmpty())) {
+                log.warn("No analysis data received from Spoon service");
                 return;
             }
 
-            log.info("Received AST with {} classes, {} methods, {} endpoints",
-                    ast.getClasses().size(),
-                    ast.getMethods().size(),
-                    ast.getApiEndpoints() != null ? ast.getApiEndpoints().size() : 0);
+            log.info("Received analysis result with {} nodes, {} edges",
+                    analysisResult.getNodes() != null ? analysisResult.getNodes().size() : 0,
+                    analysisResult.getEdges() != null ? analysisResult.getEdges().size() : 0);
+            
+//            // Log detailed metadata information
+//            if (analysisResult.getMetadata() != null) {
+//                GraphMetadata metadata = analysisResult.getMetadata();
+//                log.info("=== Analysis Metadata ===");
+//                log.info("Analysis Time: {} ({})",
+//                    metadata.getAnalysisTime() != null ? new java.util.Date(metadata.getAnalysisTime()) : "N/A",
+//                    metadata.getAnalysisTime() != null ? metadata.getAnalysisTime() : "N/A");
+//                log.info("Analysis Duration: {} ms", metadata.getAnalysisDurationMs());
+//                log.info("Files Processed: {}", metadata.getFilesProcessed());
+//                log.info("Analyzed Paths: {}", metadata.getAnalyzedPaths());
+//
+//                // Log node type distribution
+//                if (metadata.getNodeTypeCount() != null && !metadata.getNodeTypeCount().isEmpty()) {
+//                    log.info("Node Type Distribution:");
+//                    metadata.getNodeTypeCount().forEach((type, count) ->
+//                        log.info("  - {}: {}", type, count));
+//                }
+//
+//                // Log edge type distribution
+//                if (metadata.getEdgeTypeCount() != null && !metadata.getEdgeTypeCount().isEmpty()) {
+//                    log.info("Edge Type Distribution:");
+//                    metadata.getEdgeTypeCount().forEach((type, count) ->
+//                        log.info("  - {}: {}", type, count));
+//                }
+//
+//                // Log graph statistics
+//                log.info("Graph Statistics:");
+//                log.info("  - Density: {}", metadata.getDensity());
+//                log.info("  - Max Package Depth: {}", metadata.getMaxPackageDepth());
+//                log.info("  - Average Methods per Class: {}", metadata.getAverageMethodsPerClass());
+//                log.info("  - Average Fields per Class: {}", metadata.getAverageFieldsPerClass());
+//
+//                // Log circular dependencies if found
+//                if (metadata.getHasCycles() != null && metadata.getHasCycles()) {
+//                    log.warn("Circular Dependencies Detected!");
+//                    log.warn("  - Max Cycle Length: {}", metadata.getMaxCycleLength());
+//                    if (metadata.getCircularDependencies() != null && !metadata.getCircularDependencies().isEmpty()) {
+//                        log.warn("  - Circular Dependency Paths: {}", metadata.getCircularDependencies().size());
+//                        metadata.getCircularDependencies().forEach(cycle ->
+//                            log.warn("    - Cycle: {}", String.join(" -> ", cycle)));
+//                    }
+//                }
+//
+//                // Log errors if any
+//                if (metadata.getErrorCount() != null && metadata.getErrorCount() > 0) {
+//                    log.error("Analysis Errors Encountered: {}", metadata.getErrorCount());
+//                    if (metadata.getErrors() != null) {
+//                        metadata.getErrors().forEach(error -> log.error("  - {}", error));
+//                    }
+//                }
+//
+//                log.info("=== End Analysis Metadata ===");
+//            }
 
             // Step 3: Build knowledge graph
             log.info("Step 2/4: Building knowledge graph in Neo4j...");
-            graphBuilder.buildGraph(ast);
+            graphBuilder.buildGraph(analysisResult);
 
             // Step 4: Enrich with semantic information
             log.info("Step 3/4: Enriching methods with semantic information...");
@@ -165,5 +220,21 @@ public class IngestionScheduler {
                 "repositoryPath", spoonUrl,
                 "timestamp", java.time.LocalDateTime.now()
         ));
+    }
+
+    /**
+     * Fetch fresh analysis result from SpoonAST service
+     */
+    @GetMapping("/analysis")
+    public ResponseEntity<AnalysisResult> getAnalysisResult() {
+        log.info("Fetching fresh analysis result from SpoonAST service");
+        
+        try {
+            AnalysisResult result = spoonClient.fetchAST(spoonUrl);
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            log.error("Failed to fetch analysis result", e);
+            return ResponseEntity.internalServerError().build();
+        }
     }
 }

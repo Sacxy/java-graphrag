@@ -86,17 +86,19 @@ public class VectorizationService {
     private List<MethodToVectorize> getEnrichedMethodsWithoutEmbeddings() {
         try (Session session = neo4jDriver.session(sessionConfig)) {
             String query = """
-                MATCH (m:Method)-[:DEFINED_IN]->(c:Class)
+                MATCH (m:Method)
                 WHERE m.summary IS NOT NULL 
                   AND m.embedding IS NULL
-                RETURN m.signature as signature,
-                       m.name as name,
+                OPTIONAL MATCH (m)<-[:CONTAINS|HAS_METHOD]-(c)
+                WHERE c:Class OR c:Interface
+                RETURN coalesce(m.properties.signature, m.signature, m.id) as signature,
+                       coalesce(m.properties.name, m.name, 'unknown') as name,
                        m.summary as summary,
                        m.detailedExplanation as explanation,
                        m.businessTags as businessTags,
                        m.technicalTags as technicalTags,
-                       m.returnType as returnType,
-                       c.fullName as className
+                       coalesce(m.properties.returnType, m.returnType, 'void') as returnType,
+                       coalesce(c.properties.fullName, c.fullName, 'Unknown') as className
                 LIMIT 5000
                 """;
 
@@ -170,7 +172,10 @@ public class VectorizationService {
         try (Session session = neo4jDriver.session(sessionConfig)) {
             String query = """
                 UNWIND $updates AS update
-                MATCH (m:Method {signature: update.signature})
+                MATCH (m:Method)
+                WHERE m.properties.signature = update.signature 
+                   OR m.signature = update.signature
+                   OR m.id = update.signature
                 SET m.embedding = update.embedding,
                     m.vectorizedAt = datetime()
                 """;

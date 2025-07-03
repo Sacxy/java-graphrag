@@ -1,6 +1,7 @@
 package com.tekion.javaastkg.ingestion;
 
-import com.tekion.javaastkg.model.SpoonAST;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tekion.javaastkg.model.AnalysisResult;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -23,6 +24,7 @@ import java.util.UUID;
 public class SpoonASTClient {
 
     private final WebClient webClient;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${spoon.api.timeout:30000}")
     private int timeout;
@@ -61,7 +63,7 @@ public class SpoonASTClient {
      * 2. Poll for status
      * 3. Get results when ready
      */
-    public SpoonAST fetchAST(String spoonUrl) {
+    public AnalysisResult fetchAST(String spoonUrl) {
         log.info("Starting Spoon AST analysis for spoonUrl: {}", spoonUrl);
 
         try {
@@ -74,15 +76,15 @@ public class SpoonASTClient {
             log.info("Analysis completed for ID: {}", analysisId);
 
             // Step 3: Get results
-            SpoonAST ast = getResults(analysisId);
+            AnalysisResult result = getResults(analysisId);
             
-            if (ast != null) {
-                log.info("Successfully fetched AST with {} classes and {} methods",
-                        ast.getClasses() != null ? ast.getClasses().size() : 0, 
-                        ast.getMethods() != null ? ast.getMethods().size() : 0);
+            if (result != null) {
+                log.info("Successfully fetched analysis result with {} nodes and {} edges",
+                        result.getNodes() != null ? result.getNodes().size() : 0, 
+                        result.getEdges() != null ? result.getEdges().size() : 0);
             }
 
-            return ast;
+            return result;
 
         } catch (Exception e) {
             log.error("Failed to fetch AST from Spoon service", e);
@@ -102,6 +104,7 @@ public class SpoonASTClient {
                 .timeout(Duration.ofMillis(timeout))
                 .block();
 
+        response = (Map<String, Object>) response.get("data");
         if (response == null || !response.containsKey("analysisId")) {
             throw new RuntimeException("Failed to start analysis - no analysis ID returned");
         }
@@ -123,6 +126,7 @@ public class SpoonASTClient {
                     .timeout(Duration.ofSeconds(10))
                     .block();
 
+            status = (Map<String, Object>) status.get("data");
             if (status == null) {
                 throw new RuntimeException("Failed to get status for analysis ID: " + analysisId);
             }
@@ -148,19 +152,37 @@ public class SpoonASTClient {
     /**
      * Get analysis results
      */
-    private SpoonAST getResults(String analysisId) {
+    private AnalysisResult getResults(String analysisId) {
         log.info("Fetching results for analysis ID: {}", analysisId);
         
-        SpoonAST result = webClient.get()
+        Map<String, Object> result = webClient.get()
                 .uri("/results/{analysisId}", analysisId)
                 .retrieve()
-                .bodyToMono(SpoonAST.class)
+                .bodyToMono(Map.class)
                 .timeout(Duration.ofMillis(timeout))
                 .doOnError(error -> log.error("Error fetching results for analysis {}: {}", analysisId, error.getMessage()))
                 .block();
-                
+
+        result = (Map<String, Object>) result.get("data");
         log.info("Results fetched successfully for analysis ID: {}", analysisId);
-        return result;
+        AnalysisResult analysisResult = objectMapper.convertValue(result, AnalysisResult.class);
+        
+//        // Log quick summary of received data
+//        if (analysisResult != null) {
+//            log.info("Analysis Result Summary:");
+//            log.info("  - Status: {}", analysisResult.getStatus());
+//            log.info("  - Progress: {}%", analysisResult.getProgress());
+//            log.info("  - Current Phase: {}", analysisResult.getCurrentPhase());
+//            log.info("  - Total Nodes: {}", analysisResult.getNodes() != null ? analysisResult.getNodes().size() : 0);
+//            log.info("  - Total Edges: {}", analysisResult.getEdges() != null ? analysisResult.getEdges().size() : 0);
+//
+//            if (analysisResult.getMetadata() != null) {
+//                log.info("  - Analysis Duration: {} ms", analysisResult.getMetadata().getAnalysisDurationMs());
+//                log.info("  - Files Processed: {}", analysisResult.getMetadata().getFilesProcessed());
+//            }
+//        }
+
+        return analysisResult;
     }
 
     /**

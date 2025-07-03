@@ -86,27 +86,59 @@ public class SemanticEnricher {
      */
     private List<MethodToEnrich> findUnenrichedMethods() {
         try (Session session = neo4jDriver.session(sessionConfig)) {
+            // First, let's check what properties are available
+            String checkQuery = "MATCH (m:Method) RETURN m LIMIT 1";
+            Result checkResult = session.run(checkQuery);
+            if (checkResult.hasNext()) {
+                log.debug("Sample Method node properties: {}", checkResult.single().get("m").asNode().asMap());
+            }
+            
+            // Updated query for new graph structure
+            // Since properties are stored in the properties map, we need to check if summary exists
             String query = """
-                MATCH (m:Method)-[:DEFINED_IN]->(c:Class)
+                MATCH (m:Method)
                 WHERE m.summary IS NULL
-                RETURN m.signature as signature, 
-                       m.name as name,
-                       m.startLine as startLine, 
-                       m.endLine as endLine,
-                       c.filePath as filePath,
-                       c.fullName as className
+                OPTIONAL MATCH (m)<-[:CONTAINS|HAS_METHOD]-(c)
+                WHERE c:Class OR c:Interface
+                RETURN m.id as id,
+                       m.properties.signature as signature, 
+                       m.properties.name as name,
+                       m.properties.startLine as startLine, 
+                       m.properties.endLine as endLine,
+                       m.sourceFile as filePath,
+                       c.properties.fullName as className
                 LIMIT 1000
                 """;
 
-            return session.run(query)
-                    .list(record -> new MethodToEnrich(
-                            record.get("signature").asString(),
-                            record.get("name").asString(),
-                            record.get("startLine").asInt(),
-                            record.get("endLine").asInt(),
-                            record.get("filePath").asString(),
-                            record.get("className").asString()
-                    ));
+            List<MethodToEnrich> methods = session.run(query)
+                    .list(record -> {
+                        try {
+                            // Handle potential nulls from properties map
+                            String signature = record.get("signature").isNull() ? 
+                                "unknown_" + record.get("id").asString() : record.get("signature").asString();
+                            String name = record.get("name").isNull() ? 
+                                "unknown" : record.get("name").asString();
+                            int startLine = record.get("startLine").isNull() ? 
+                                0 : record.get("startLine").asInt();
+                            int endLine = record.get("endLine").isNull() ? 
+                                0 : record.get("endLine").asInt();
+                            String filePath = record.get("filePath").isNull() ? 
+                                "" : record.get("filePath").asString();
+                            String className = record.get("className").isNull() ? 
+                                "Unknown" : record.get("className").asString();
+                            
+                            return new MethodToEnrich(signature, name, startLine, endLine, filePath, className);
+                        } catch (Exception e) {
+                            log.warn("Failed to process method record: {}", e.getMessage());
+                            return null;
+                        }
+                    })
+                    .stream()
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList());
+            
+            log.info("Found {} unenriched methods", methods.size());
+            return methods;
         }
     }
 
@@ -139,7 +171,7 @@ public class SemanticEnricher {
      * Reads the actual method code from the source file
      */
     private String readMethodCode(MethodToEnrich method) throws IOException {
-        Path filePath = Paths.get(sourcePath, method.filePath);
+        Path filePath = Path.of(method.filePath);
 
         if (!Files.exists(filePath)) {
             log.warn("Source file not found: {}", filePath);
@@ -229,17 +261,17 @@ public class SemanticEnricher {
      */
     private void updateMethodNode(String signature, EnrichmentResult enrichment) {
         try (Session session = neo4jDriver.session(sessionConfig)) {
+            // First try to match by properties.signature, then fall back to direct match
             String query = """
-                MATCH (m:Method {signature: $signature})
-                SET m += {
-                    summary: $summary,
-                    detailedExplanation: $detailedExplanation,
-                    businessTags: $businessTags,
-                    technicalTags: $technicalTags,
-                    complexity: $complexity,
-                    dependencies: $dependencies,
-                    enrichedAt: datetime()
-                }
+                MATCH (m:Method)
+                WHERE m.properties.signature = $signature OR m.signature = $signature
+                SET m.summary = $summary,
+                    m.detailedExplanation = $detailedExplanation,
+                    m.businessTags = $businessTags,
+                    m.technicalTags = $technicalTags,
+                    m.complexity = $complexity,
+                    m.dependencies = $dependencies,
+                    m.enrichedAt = datetime()
                 """;
 
             session.run(query, Map.of(
