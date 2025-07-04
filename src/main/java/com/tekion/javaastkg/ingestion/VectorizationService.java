@@ -87,8 +87,8 @@ public class VectorizationService {
         try (Session session = neo4jDriver.session(sessionConfig)) {
             String query = """
                 MATCH (m:Method)
-                WHERE m.summary IS NOT NULL 
-                  AND (m.embedding IS NULL OR NOT exists(m.embedding))
+                WHERE m.summary IS NOT NULL
+                  AND m.embedding IS NULL
                 RETURN m.id as id,
                        m.signature as signature,
                        m.name as name,
@@ -96,9 +96,14 @@ public class VectorizationService {
                        m.detailedExplanation as explanation,
                        m.businessTags as businessTags,
                        m.technicalTags as technicalTags,
-                       COALESCE(m.returnType, m.properties.returnType, 'void') as returnType,
-                       COALESCE(m.className, m.properties.className, 'Unknown') as className
-                LIMIT 5000
+                       COALESCE(m.returnType, 'void') as returnType,
+                       COALESCE(m.className, 'Unknown') as className,
+                       COALESCE(m.isStatic, false) as isStatic,
+                       COALESCE(m.isPublic, true) as isPublic,
+                       COALESCE(m.isAbstract, false) as isAbstract,
+                       COALESCE(m.parameterCount, 0) as parameterCount,
+                       COALESCE(m.complexity, 'unknown') as complexity
+                LIMIT 1000
                 """;
 
             return session.run(query)
@@ -111,7 +116,12 @@ public class VectorizationService {
                             record.get("businessTags").asList(Value::asString),
                             record.get("technicalTags").asList(Value::asString),
                             record.get("returnType").asString(),
-                            record.get("className").asString()
+                            record.get("className").asString(),
+                            record.get("isStatic").asBoolean(),
+                            record.get("isPublic").asBoolean(),
+                            record.get("isAbstract").asBoolean(),
+                            record.get("parameterCount").asInt(),
+                            record.get("complexity").asString()
                     ));
         }
     }
@@ -150,6 +160,13 @@ public class VectorizationService {
         doc.append("Class: ").append(method.className).append("\n");
         doc.append("Signature: ").append(method.signature).append("\n");
         doc.append("Returns: ").append(method.returnType).append("\n");
+        doc.append("Parameters: ").append(method.parameterCount).append("\n");
+        doc.append("Complexity: ").append(method.complexity).append("\n");
+        
+        // Include method modifiers
+        if (method.isStatic) doc.append("Static method\n");
+        if (method.isAbstract) doc.append("Abstract method\n");
+        if (!method.isPublic) doc.append("Non-public method\n");
 
         // Include semantic information
         doc.append("Summary: ").append(method.summary).append("\n");
@@ -239,5 +256,10 @@ public class VectorizationService {
         private List<String> technicalTags;
         private String returnType;
         private String className;
+        private boolean isStatic;
+        private boolean isPublic;
+        private boolean isAbstract;
+        private int parameterCount;
+        private String complexity;
     }
 }

@@ -20,6 +20,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.*;
+import org.springframework.core.io.ClassPathResource;
 import java.util.stream.Collectors;
 
 /**
@@ -35,6 +36,7 @@ public class SemanticEnricher {
     private final ChatLanguageModel llm;
     private final ObjectMapper objectMapper;
     private final ExecutorService executorService;
+    private final String semanticEnrichmentPrompt;
 
     @Value("${project.source.path}")
     private String sourcePath;
@@ -60,6 +62,21 @@ public class SemanticEnricher {
         this.maxConcurrentCalls = maxConcurrentCalls;
         // Reduce concurrent threads to avoid rate limits
         this.executorService = Executors.newFixedThreadPool(maxConcurrentCalls);
+        // Load prompt template from resources
+        this.semanticEnrichmentPrompt = loadPromptTemplate("prompts/semantic-enrichment.txt");
+    }
+
+    /**
+     * Loads a prompt template from the classpath
+     */
+    private String loadPromptTemplate(String path) {
+        try {
+            ClassPathResource resource = new ClassPathResource(path);
+            return FileUtils.readFileToString(resource.getFile(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            log.error("Failed to load prompt template from {}", path, e);
+            throw new RuntimeException("Failed to load prompt template", e);
+        }
     }
 
     /**
@@ -68,7 +85,6 @@ public class SemanticEnricher {
     public void enrichMethods() {
         List<MethodToEnrich> methods = findUnenrichedMethods();
         log.info("Found {} methods to enrich semantically", methods.size());
-
         if (methods.isEmpty()) {
             return;
         }
@@ -107,20 +123,22 @@ public class SemanticEnricher {
                 log.info("Sample Method node properties: {}", checkResult.single().get("m").asNode().asMap());
             }
             
-            // Updated query for new graph structure
-            // Since properties are stored in the properties map, we need to check if summary exists
+            // Updated query - all properties are flattened on the node, not in a nested properties map
             String query = """
                 MATCH (m:Method)
                 WHERE m.summary IS NULL
-                OPTIONAL MATCH (m)<-[:CONTAINS|HAS_METHOD]-(c)
-                WHERE c:Class OR c:Interface
                 RETURN m.id as id,
-                       m.properties.signature as signature, 
-                       m.properties.name as name,
-                       m.properties.startLine as startLine, 
-                       m.properties.endLine as endLine,
-                       m.sourceFile as filePath,
-                       c.properties.fullName as className
+                       m.signature as signature,
+                       m.name as name,
+                       m.startLine as startLine,
+                       m.endLine as endLine,
+                       m.filePath as filePath,
+                       m.className as className,
+                       m.returnType as returnType,
+                       m.isStatic as isStatic,
+                       m.isPublic as isPublic,
+                       m.isAbstract as isAbstract,
+                       m.parameterCount as parameterCount
                 LIMIT 1000
                 """;
 
@@ -143,7 +161,14 @@ public class SemanticEnricher {
                             
                             String id = record.get("id").isNull() ? 
                                 "unknown_" + signature : record.get("id").asString();
-                            return new MethodToEnrich(id, signature, name, startLine, endLine, filePath, className);
+                            String returnType = record.get("returnType").isNull() ? "void" : record.get("returnType").asString();
+                            boolean isStatic = record.get("isStatic").isNull() ? false : record.get("isStatic").asBoolean();
+                            boolean isPublic = record.get("isPublic").isNull() ? true : record.get("isPublic").asBoolean();
+                            boolean isAbstract = record.get("isAbstract").isNull() ? false : record.get("isAbstract").asBoolean();
+                            int parameterCount = record.get("parameterCount").isNull() ? 0 : record.get("parameterCount").asInt();
+                            
+                            return new MethodToEnrich(id, signature, name, startLine, endLine, filePath, className,
+                                    returnType, isStatic, isPublic, isAbstract, parameterCount);
                         } catch (Exception e) {
                             log.warn("Failed to process method record: {}", e.getMessage());
                             return null;
@@ -240,37 +265,7 @@ public class SemanticEnricher {
      * Calls the LLM to get semantic enrichment for the method
      */
     private EnrichmentResult callLLMForEnrichment(MethodToEnrich method, String code) {
-        String prompt = String.format("""
-            You are an expert Java software architect analyzing code for a knowledge graph.
-            
-            Analyze this Java method and provide insights:
-            
-            Class: %s
-            Method: %s
-            
-            Code:
-            ```java
-            %s
-            ```
-            
-            Provide a JSON response with EXACTLY this structure:
-            {
-                "summary": "One sentence describing the business purpose",
-                "detailedExplanation": "A paragraph explaining the logic step-by-step",
-                "businessTags": ["tag1", "tag2", "tag3"],
-                "technicalTags": ["tag1", "tag2"],
-                "complexity": "low|medium|high",
-                "dependencies": ["external service or library names if any"]
-            }
-            
-            Focus on:
-            1. What business problem this method solves
-            2. Key algorithms or patterns used
-            3. External dependencies or integrations
-            4. Error handling approach
-            
-            Respond ONLY with valid JSON, no additional text.
-            """, method.className, method.name, code);
+        String prompt = String.format(semanticEnrichmentPrompt, method.className, method.name, code);
 
         String response = "";
         try {
@@ -298,7 +293,6 @@ public class SemanticEnricher {
                     .businessTags(List.of("unanalyzed"))
                     .technicalTags(List.of("java"))
                     .complexity("unknown")
-                    .dependencies(List.of())
                     .build();
         }
     }
@@ -316,7 +310,6 @@ public class SemanticEnricher {
                     m.businessTags = $businessTags,
                     m.technicalTags = $technicalTags,
                     m.complexity = $complexity,
-                    m.dependencies = $dependencies,
                     m.enrichedAt = datetime()
                 RETURN count(m) as updated
                 """;
@@ -327,8 +320,7 @@ public class SemanticEnricher {
                     "detailedExplanation", enrichment.getDetailedExplanation(),
                     "businessTags", enrichment.getBusinessTags(),
                     "technicalTags", enrichment.getTechnicalTags(),
-                    "complexity", enrichment.getComplexity(),
-                    "dependencies", enrichment.getDependencies()
+                    "complexity", enrichment.getComplexity()
             ));
             
             int updatedCount = result.single().get("updated").asInt();
@@ -353,6 +345,11 @@ public class SemanticEnricher {
         private int endLine;
         private String filePath;
         private String className;
+        private String returnType;
+        private boolean isStatic;
+        private boolean isPublic;
+        private boolean isAbstract;
+        private int parameterCount;
     }
 
     /**
@@ -368,6 +365,5 @@ public class SemanticEnricher {
         private List<String> businessTags;
         private List<String> technicalTags;
         private String complexity;
-        private List<String> dependencies;
     }
 }

@@ -110,14 +110,13 @@ public class LLMConfig {
      * Configures the Voyage AI embedding model for code vectorization
      */
     @Bean
-    public EmbeddingModel embeddingModel(
-            @Value("${llm.voyage.model:voyage-code-3}") String embeddingModelName) {
+    public EmbeddingModel embeddingModel() {
         
-        log.info("Configuring Voyage AI embedding model: {}", embeddingModelName);
+        log.info("Configuring Voyage AI embedding model: {}", VoyageAiEmbeddingModelName.VOYAGE_CODE_2);
 
         return VoyageAiEmbeddingModel.builder()
                 .apiKey(voyageApiKey)
-                .modelName(embeddingModelName)
+                .modelName(VoyageAiEmbeddingModelName.VOYAGE_CODE_2)
                 .inputType("document") // Use "document" for indexing, "query" for search queries
                 .timeout(Duration.ofSeconds(60))
                 .maxRetries(3)
