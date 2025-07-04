@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FileUtils;
 import org.neo4j.driver.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -40,16 +41,25 @@ public class SemanticEnricher {
 
     @Value("${ingestion.batch.size:50}")
     private int batchSize;
+    
+    @Value("${enrichment.delay.ms:1000}")
+    private long delayBetweenCalls;
+    
+    @Value("${enrichment.max.concurrent:2}")
+    private int maxConcurrentCalls;
 
     @Autowired
     public SemanticEnricher(Driver neo4jDriver,
                             SessionConfig sessionConfig,
-                            ChatLanguageModel llm) {
+                            @Qualifier("semanticEnricherModel") ChatLanguageModel llm,
+                            @Value("${enrichment.max.concurrent:2}") int maxConcurrentCalls) {
         this.neo4jDriver = neo4jDriver;
         this.sessionConfig = sessionConfig;
         this.llm = llm;
         this.objectMapper = new ObjectMapper();
-        this.executorService = Executors.newFixedThreadPool(5);
+        this.maxConcurrentCalls = maxConcurrentCalls;
+        // Reduce concurrent threads to avoid rate limits
+        this.executorService = Executors.newFixedThreadPool(maxConcurrentCalls);
     }
 
     /**
@@ -63,12 +73,16 @@ public class SemanticEnricher {
             return;
         }
 
-        // Process in batches
+        // Process in smaller batches to avoid rate limits
+        int effectiveBatchSize = Math.min(batchSize, 10); // Smaller batches for rate limiting
         List<CompletableFuture<Void>> futures = new ArrayList<>();
+        
+        log.info("Processing {} methods in batches of {} with {} concurrent workers", 
+                methods.size(), effectiveBatchSize, maxConcurrentCalls);
 
-        for (int i = 0; i < methods.size(); i += batchSize) {
+        for (int i = 0; i < methods.size(); i += effectiveBatchSize) {
             List<MethodToEnrich> batch = methods.subList(i,
-                    Math.min(i + batchSize, methods.size()));
+                    Math.min(i + effectiveBatchSize, methods.size()));
 
             CompletableFuture<Void> future = CompletableFuture.runAsync(() ->
                     processBatch(batch), executorService);
@@ -90,7 +104,7 @@ public class SemanticEnricher {
             String checkQuery = "MATCH (m:Method) RETURN m LIMIT 1";
             Result checkResult = session.run(checkQuery);
             if (checkResult.hasNext()) {
-                log.debug("Sample Method node properties: {}", checkResult.single().get("m").asNode().asMap());
+                log.info("Sample Method node properties: {}", checkResult.single().get("m").asNode().asMap());
             }
             
             // Updated query for new graph structure
@@ -127,7 +141,9 @@ public class SemanticEnricher {
                             String className = record.get("className").isNull() ? 
                                 "Unknown" : record.get("className").asString();
                             
-                            return new MethodToEnrich(signature, name, startLine, endLine, filePath, className);
+                            String id = record.get("id").isNull() ? 
+                                "unknown_" + signature : record.get("id").asString();
+                            return new MethodToEnrich(id, signature, name, startLine, endLine, filePath, className);
                         } catch (Exception e) {
                             log.warn("Failed to process method record: {}", e.getMessage());
                             return null;
@@ -146,7 +162,7 @@ public class SemanticEnricher {
      * Processes a batch of methods for enrichment
      */
     private void processBatch(List<MethodToEnrich> batch) {
-        log.debug("Processing batch of {} methods", batch.size());
+        log.info("Processing batch of {} methods", batch.size());
 
         for (MethodToEnrich method : batch) {
             try {
@@ -156,11 +172,42 @@ public class SemanticEnricher {
                 // Get enrichment from LLM
                 EnrichmentResult enrichment = callLLMForEnrichment(method, code);
 
-                // Update Neo4j
-                updateMethodNode(method.signature, enrichment);
+                // Update Neo4j  
+                updateMethodNode(method.id, enrichment);
 
-                log.debug("Successfully enriched method: {}", method.signature);
+                log.info("Successfully enriched method: {}", method.signature);
+                
+                // Add delay between calls to respect rate limits
+                if (delayBetweenCalls > 0) {
+                    Thread.sleep(delayBetweenCalls);
+                }
 
+            } catch (dev.ai4j.openai4j.OpenAiHttpException e) {
+                if (e.getMessage().contains("rate_limit_exceeded")) {
+                    log.warn("Rate limit hit, waiting before retry: {}", e.getMessage());
+                    try {
+                        // Extract wait time from error message if available
+                        String msg = e.getMessage();
+                        if (msg.contains("Please try again in")) {
+                            String waitTime = msg.substring(msg.indexOf("Please try again in") + 20);
+                            waitTime = waitTime.substring(0, waitTime.indexOf("."));
+                            long waitMs = Long.parseLong(waitTime.replaceAll("[^0-9]", ""));
+                            log.info("Waiting {} ms as suggested by API", waitMs);
+                            Thread.sleep(waitMs + 100); // Add buffer
+                        } else {
+                            // Default wait time
+                            Thread.sleep(60000); // 1 minute
+                        }
+                        // Retry once after waiting
+                        String code2 = readMethodCode(method);
+                        EnrichmentResult enrichment = callLLMForEnrichment(method, code2);
+                        updateMethodNode(method.id, enrichment);
+                    } catch (Exception retryError) {
+                        log.error("Failed to enrich method after retry: {}", method.signature, retryError);
+                    }
+                } else {
+                    log.error("Failed to enrich method: {}", method.signature, e);
+                }
             } catch (Exception e) {
                 log.error("Failed to enrich method: {}", method.signature, e);
             }
@@ -259,12 +306,11 @@ public class SemanticEnricher {
     /**
      * Updates the method node in Neo4j with enrichment data
      */
-    private void updateMethodNode(String signature, EnrichmentResult enrichment) {
+    private void updateMethodNode(String methodId, EnrichmentResult enrichment) {
         try (Session session = neo4jDriver.session(sessionConfig)) {
-            // First try to match by properties.signature, then fall back to direct match
+            // Match by unique ID which is more reliable
             String query = """
-                MATCH (m:Method)
-                WHERE m.properties.signature = $signature OR m.signature = $signature
+                MATCH (m:Method {id: $methodId})
                 SET m.summary = $summary,
                     m.detailedExplanation = $detailedExplanation,
                     m.businessTags = $businessTags,
@@ -272,17 +318,25 @@ public class SemanticEnricher {
                     m.complexity = $complexity,
                     m.dependencies = $dependencies,
                     m.enrichedAt = datetime()
+                RETURN count(m) as updated
                 """;
 
-            session.run(query, Map.of(
-                    "signature", signature,
+            Result result = session.run(query, Map.of(
+                    "methodId", methodId,
                     "summary", enrichment.getSummary(),
                     "detailedExplanation", enrichment.getDetailedExplanation(),
                     "businessTags", enrichment.getBusinessTags(),
                     "technicalTags", enrichment.getTechnicalTags(),
                     "complexity", enrichment.getComplexity(),
                     "dependencies", enrichment.getDependencies()
-            )).consume();
+            ));
+            
+            int updatedCount = result.single().get("updated").asInt();
+            if (updatedCount > 0) {
+                log.info("Successfully updated method: {}", methodId);
+            } else {
+                log.warn("No method found with ID: {}", methodId);
+            }
         }
     }
 
@@ -292,6 +346,7 @@ public class SemanticEnricher {
     @Data
     @AllArgsConstructor
     private static class MethodToEnrich {
+        private String id;
         private String signature;
         private String name;
         private int startLine;

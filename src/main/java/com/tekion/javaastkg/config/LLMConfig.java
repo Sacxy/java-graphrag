@@ -5,15 +5,17 @@ import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.voyageai.VoyageAiEmbeddingModel;
 import dev.langchain4j.model.voyageai.VoyageAiEmbeddingModelName;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import lombok.extern.slf4j.Slf4j;
 import java.time.Duration;
 
 /**
  * Configuration for Language Model integrations.
- * Supports both chat models and embedding models.
+ * Supports multiple models for different tasks.
  */
 @Configuration
 @Slf4j
@@ -22,31 +24,70 @@ public class LLMConfig {
     @Value("${llm.openai.api-key}")
     private String openAiApiKey;
 
-    @Value("${llm.openai.model:gpt-4}")
-    private String chatModelName;
-
-    @Value("${llm.openai.temperature:0.1}")
-    private double temperature;
-
-    @Value("${llm.openai.max-tokens:2000}")
-    private int maxTokens;
-
     @Value("${llm.voyage.api-key}")
     private String voyageApiKey;
 
-    @Value("${llm.voyage.model:voyage-code-3}")
-    private String embeddingModelName;
-
     /**
-     * Configures the main chat model for semantic enrichment and query processing
+     * Chat model for semantic enrichment (bulk processing)
      */
     @Bean
-    public ChatLanguageModel chatLanguageModel() {
-        log.info("Configuring OpenAI chat model: {}", chatModelName);
-
+    @Qualifier("semanticEnricherModel")
+    public ChatLanguageModel semanticEnricherModel(
+            @Value("${llm.semantic-enricher.model:gpt-4o-mini}") String modelName,
+            @Value("${llm.semantic-enricher.temperature:0.1}") double temperature,
+            @Value("${llm.semantic-enricher.max-tokens:2000}") int maxTokens) {
+        
+        log.info("Configuring Semantic Enricher model: {}", modelName);
         return OpenAiChatModel.builder()
                 .apiKey(openAiApiKey)
-                .modelName(chatModelName)
+                .modelName(modelName)
+                .temperature(temperature)
+                .maxTokens(maxTokens)
+                .timeout(Duration.ofSeconds(60))
+                .maxRetries(3)
+                .logRequests(false) // Reduce logs for bulk processing
+                .logResponses(false)
+                .build();
+    }
+
+    /**
+     * Chat model for context distillation (simple classification)
+     */
+    @Bean
+    @Qualifier("contextDistillerModel")
+    public ChatLanguageModel contextDistillerModel(
+            @Value("${llm.context-distiller.model:gpt-4o-mini}") String modelName,
+            @Value("${llm.context-distiller.temperature:0.0}") double temperature,
+            @Value("${llm.context-distiller.max-tokens:500}") int maxTokens) {
+        
+        log.info("Configuring Context Distiller model: {}", modelName);
+        return OpenAiChatModel.builder()
+                .apiKey(openAiApiKey)
+                .modelName(modelName)
+                .temperature(temperature)
+                .maxTokens(maxTokens)
+                .timeout(Duration.ofSeconds(30))
+                .maxRetries(3)
+                .logRequests(false)
+                .logResponses(false)
+                .build();
+    }
+
+    /**
+     * Chat model for generation service (user-facing responses)
+     */
+    @Bean
+    @Qualifier("generationServiceModel")
+    @Primary
+    public ChatLanguageModel generationServiceModel(
+            @Value("${llm.generation-service.model:gpt-4o}") String modelName,
+            @Value("${llm.generation-service.temperature:0.1}") double temperature,
+            @Value("${llm.generation-service.max-tokens:2000}") int maxTokens) {
+        
+        log.info("Configuring Generation Service model: {}", modelName);
+        return OpenAiChatModel.builder()
+                .apiKey(openAiApiKey)
+                .modelName(modelName)
                 .temperature(temperature)
                 .maxTokens(maxTokens)
                 .timeout(Duration.ofSeconds(60))
@@ -57,10 +98,21 @@ public class LLMConfig {
     }
 
     /**
+     * Legacy bean for backward compatibility
+     */
+    @Bean
+    public ChatLanguageModel chatLanguageModel(
+            @Qualifier("generationServiceModel") ChatLanguageModel generationModel) {
+        return generationModel;
+    }
+
+    /**
      * Configures the Voyage AI embedding model for code vectorization
      */
     @Bean
-    public EmbeddingModel embeddingModel() {
+    public EmbeddingModel embeddingModel(
+            @Value("${llm.voyage.model:voyage-code-3}") String embeddingModelName) {
+        
         log.info("Configuring Voyage AI embedding model: {}", embeddingModelName);
 
         return VoyageAiEmbeddingModel.builder()

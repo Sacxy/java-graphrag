@@ -88,22 +88,22 @@ public class VectorizationService {
             String query = """
                 MATCH (m:Method)
                 WHERE m.summary IS NOT NULL 
-                  AND m.embedding IS NULL
-                OPTIONAL MATCH (m)<-[:CONTAINS|HAS_METHOD]-(c)
-                WHERE c:Class OR c:Interface
-                RETURN coalesce(m.properties.signature, m.signature, m.id) as signature,
-                       coalesce(m.properties.name, m.name, 'unknown') as name,
+                  AND (m.embedding IS NULL OR NOT exists(m.embedding))
+                RETURN m.id as id,
+                       m.signature as signature,
+                       m.name as name,
                        m.summary as summary,
                        m.detailedExplanation as explanation,
                        m.businessTags as businessTags,
                        m.technicalTags as technicalTags,
-                       coalesce(m.properties.returnType, m.returnType, 'void') as returnType,
-                       coalesce(c.properties.fullName, c.fullName, 'Unknown') as className
+                       COALESCE(m.returnType, m.properties.returnType, 'void') as returnType,
+                       COALESCE(m.className, m.properties.className, 'Unknown') as className
                 LIMIT 5000
                 """;
 
             return session.run(query)
                     .list(record -> new MethodToVectorize(
+                            record.get("id").asString(),
                             record.get("signature").asString(),
                             record.get("name").asString(),
                             record.get("summary").asString(),
@@ -172,18 +172,16 @@ public class VectorizationService {
         try (Session session = neo4jDriver.session(sessionConfig)) {
             String query = """
                 UNWIND $updates AS update
-                MATCH (m:Method)
-                WHERE m.properties.signature = update.signature 
-                   OR m.signature = update.signature
-                   OR m.id = update.signature
+                MATCH (m:Method {id: update.id})
                 SET m.embedding = update.embedding,
                     m.vectorizedAt = datetime()
+                RETURN count(m) as updated
                 """;
 
             List<Map<String, Object>> updates = new ArrayList<>();
             for (int i = 0; i < methods.size(); i++) {
                 updates.add(Map.of(
-                        "signature", methods.get(i).getSignature(),
+                        "id", methods.get(i).getId(),
                         "embedding", embeddings.get(i).vector()
                 ));
             }
@@ -232,6 +230,7 @@ public class VectorizationService {
     @Data
     @AllArgsConstructor
     private static class MethodToVectorize {
+        private String id;
         private String signature;
         private String name;
         private String summary;
