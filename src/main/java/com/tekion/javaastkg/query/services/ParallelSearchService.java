@@ -1,6 +1,7 @@
 package com.tekion.javaastkg.query.services;
 
 import com.tekion.javaastkg.query.services.EntityExtractor.ExtractedEntities;
+import com.tekion.javaastkg.query.services.EnhancedEntityExtractor;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -38,6 +39,21 @@ public class ParallelSearchService {
         this.sessionConfig = sessionConfig;
     }
 
+    /**
+     * Performs full-text search based on enhanced extracted entities
+     */
+    @Async
+    public CompletableFuture<List<SearchResult>> fullTextSearch(EnhancedEntityExtractor.ExtractedEntities entities) {
+        // Convert to basic entities for backward compatibility
+        ExtractedEntities basicEntities = ExtractedEntities.builder()
+            .classes(entities.getClasses())
+            .methods(entities.getMethods())
+            .packages(entities.getPackages())
+            .terms(entities.getTerms())
+            .build();
+        return fullTextSearch(basicEntities);
+    }
+    
     /**
      * Performs full-text search based on extracted entities
      */

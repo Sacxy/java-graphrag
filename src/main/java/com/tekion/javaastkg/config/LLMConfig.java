@@ -113,11 +113,11 @@ public class LLMConfig {
     @Qualifier("documentEmbeddingModel")
     public EmbeddingModel documentEmbeddingModel() {
         
-        log.info("Configuring Voyage AI document embedding model: {}", VoyageAiEmbeddingModelName.VOYAGE_3);
+        log.info("Configuring Voyage AI document embedding model: voyage-code-3");
 
         return VoyageAiEmbeddingModel.builder()
                 .apiKey(voyageApiKey)
-                .modelName(VoyageAiEmbeddingModelName.VOYAGE_3) // Better for unstructured text
+                .modelName("voyage-code-3") // Better for unstructured text
                 .inputType("document") // For creating embeddings
                 .timeout(Duration.ofSeconds(60))
                 .maxRetries(3)
@@ -133,12 +133,12 @@ public class LLMConfig {
     @Qualifier("queryEmbeddingModel")
     @Primary
     public EmbeddingModel queryEmbeddingModel() {
-        
-        log.info("Configuring Voyage AI query embedding model: {}", VoyageAiEmbeddingModelName.VOYAGE_3);
+
+        log.info("Configuring Voyage AI document embedding model: voyage-code-3");
 
         return VoyageAiEmbeddingModel.builder()
                 .apiKey(voyageApiKey)
-                .modelName(VoyageAiEmbeddingModelName.VOYAGE_3)
+                .modelName("voyage-code-3")
                 .inputType("query") // For search queries
                 .timeout(Duration.ofSeconds(60))
                 .maxRetries(3)

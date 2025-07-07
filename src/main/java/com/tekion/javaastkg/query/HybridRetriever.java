@@ -3,6 +3,7 @@ package com.tekion.javaastkg.query;
 import com.tekion.javaastkg.model.GraphEntities;
 import com.tekion.javaastkg.model.QueryModels;
 import com.tekion.javaastkg.query.services.EntityExtractor;
+import com.tekion.javaastkg.query.services.EnhancedEntityExtractor;
 import com.tekion.javaastkg.query.services.ParallelSearchService;
 import com.tekion.javaastkg.query.services.SearchResultCombiner;
 import com.tekion.javaastkg.query.services.GraphExpander;
@@ -33,6 +34,7 @@ public class HybridRetriever {
     private final SessionConfig sessionConfig;
     private final EmbeddingModel embeddingModel;
     private final EntityExtractor entityExtractor;
+    private final EnhancedEntityExtractor enhancedEntityExtractor;
     private final ParallelSearchService parallelSearchService;
     private final SearchResultCombiner searchResultCombiner;
     private final GraphExpander graphExpander;
@@ -53,6 +55,7 @@ public class HybridRetriever {
                            SessionConfig sessionConfig,
                            @Qualifier("queryEmbeddingModel") EmbeddingModel embeddingModel,
                            EntityExtractor entityExtractor,
+                           EnhancedEntityExtractor enhancedEntityExtractor,
                            ParallelSearchService parallelSearchService,
                            SearchResultCombiner searchResultCombiner,
                            GraphExpander graphExpander,
@@ -62,6 +65,7 @@ public class HybridRetriever {
         this.sessionConfig = sessionConfig;
         this.embeddingModel = embeddingModel;
         this.entityExtractor = entityExtractor;
+        this.enhancedEntityExtractor = enhancedEntityExtractor;
         this.parallelSearchService = parallelSearchService;
         this.searchResultCombiner = searchResultCombiner;
         this.graphExpander = graphExpander;
@@ -76,15 +80,16 @@ public class HybridRetriever {
         log.info("Performing hybrid retrieval for query: {}", query);
 
         try {
-            // Step 1: Extract entities from query
-            EntityExtractor.ExtractedEntities entities = entityExtractor.extract(query);
-            log.debug("Extracted entities: classes={}, methods={}, packages={}, terms={}", 
+            // Step 1: Extract and expand entities from query using enhanced extractor
+            EnhancedEntityExtractor.ExtractedEntities entities = enhancedEntityExtractor.extractAndExpand(query);
+            log.debug("Enhanced extraction: classes={}, methods={}, packages={}, terms={}, expanded={}", 
                      entities.getClasses().size(), entities.getMethods().size(), 
-                     entities.getPackages().size(), entities.getTerms().size());
+                     entities.getPackages().size(), entities.getTerms().size(),
+                     entities.isExpanded());
 
             // Step 2: Generate query embedding
             float[] queryVector = embeddingModel.embed(query).content().vector();
-            log.debug("Generated query vector with length: {}", queryVector.length);
+            log.info("Generated query vector with length: {}", queryVector.length);
 
             // Step 3: Parallel search execution
             CompletableFuture<List<ParallelSearchService.SearchResult>> fullTextFuture = 

@@ -38,6 +38,9 @@ public class VectorizationService {
 
     @org.springframework.beans.factory.annotation.Value("${llm.voyage.dimension:1024}")
     private int embeddingDimension;
+    
+    @org.springframework.beans.factory.annotation.Value("${vectorization.force-recreate-indexes:true}")
+    private boolean forceRecreateIndexes;
 
     @Autowired
     public VectorizationService(Driver neo4jDriver,
@@ -424,25 +427,37 @@ public class VectorizationService {
             String checkQuery = "SHOW INDEXES WHERE name = 'method_embeddings'";
             List<Record> existing = session.run(checkQuery).list();
 
-            if (existing.isEmpty()) {
-                log.info("Creating vector index 'method_embeddings'");
-
-                String createIndexQuery = String.format("""
-                    CREATE VECTOR INDEX method_embeddings IF NOT EXISTS
-                    FOR (m:Method) ON (m.embedding)
-                    OPTIONS { 
-                        indexConfig: {
-                            `vector.dimensions`: %d,
-                            `vector.similarity_function`: 'cosine'
-                        }
+            if (!existing.isEmpty()) {
+                if (forceRecreateIndexes) {
+                    log.info("Method vector index already exists, dropping and recreating...");
+                    try {
+                        session.run("DROP INDEX method_embeddings").consume();
+                        log.info("Dropped existing method vector index");
+                        // Wait a bit for the index to be fully dropped
+                        Thread.sleep(1000);
+                    } catch (Exception e) {
+                        log.warn("Failed to drop existing method vector index: {}", e.getMessage());
                     }
-                    """, embeddingDimension);
-
-                session.run(createIndexQuery).consume();
-                log.info("Method vector index created successfully");
-            } else {
-                log.info("Method vector index already exists");
+                } else {
+                    log.info("Method vector index already exists, skipping recreation");
+                    return;
+                }
             }
+
+            log.info("Creating vector index 'method_embeddings'");
+            String createIndexQuery = String.format("""
+                CREATE VECTOR INDEX method_embeddings IF NOT EXISTS
+                FOR (m:Method) ON (m.embedding)
+                OPTIONS { 
+                    indexConfig: {
+                        `vector.dimensions`: %d,
+                        `vector.similarity_function`: 'cosine'
+                    }
+                }
+                """, embeddingDimension);
+
+            session.run(createIndexQuery).consume();
+            log.info("Method vector index created successfully");
         } catch (Exception e) {
             log.error("Failed to create method vector index", e);
         }
@@ -457,25 +472,32 @@ public class VectorizationService {
             String checkQuery = "SHOW INDEXES WHERE name = 'class_embeddings'";
             List<Record> existing = session.run(checkQuery).list();
 
-            if (existing.isEmpty()) {
-                log.info("Creating vector index 'class_embeddings'");
-
-                String createIndexQuery = String.format("""
-                    CREATE VECTOR INDEX class_embeddings IF NOT EXISTS
-                    FOR (c:Class) ON (c.embedding)
-                    OPTIONS { 
-                        indexConfig: {
-                            `vector.dimensions`: %d,
-                            `vector.similarity_function`: 'cosine'
-                        }
-                    }
-                    """, embeddingDimension);
-
-                session.run(createIndexQuery).consume();
-                log.info("Class vector index created successfully");
-            } else {
-                log.info("Class vector index already exists");
+            if (!existing.isEmpty()) {
+                log.info("Class vector index already exists, dropping and recreating...");
+                try {
+                    session.run("DROP INDEX class_embeddings").consume();
+                    log.info("Dropped existing class vector index");
+                    // Wait a bit for the index to be fully dropped
+                    Thread.sleep(1000);
+                } catch (Exception e) {
+                    log.warn("Failed to drop existing class vector index: {}", e.getMessage());
+                }
             }
+
+            log.info("Creating vector index 'class_embeddings'");
+            String createIndexQuery = String.format("""
+                CREATE VECTOR INDEX class_embeddings IF NOT EXISTS
+                FOR (c:Class) ON (c.embedding)
+                OPTIONS { 
+                    indexConfig: {
+                        `vector.dimensions`: %d,
+                        `vector.similarity_function`: 'cosine'
+                    }
+                }
+                """, embeddingDimension);
+
+            session.run(createIndexQuery).consume();
+            log.info("Class vector index created successfully");
         } catch (Exception e) {
             log.error("Failed to create class vector index", e);
         }
@@ -490,17 +512,24 @@ public class VectorizationService {
             String checkQuery = "SHOW INDEXES WHERE name = 'method_names'";
             List<Record> existing = session.run(checkQuery).list();
 
-            if (existing.isEmpty()) {
-                log.info("Creating full-text index 'method_names'");
-                String createIndexQuery = """
-                    CREATE FULLTEXT INDEX method_names IF NOT EXISTS
-                    FOR (m:Method) ON EACH [m.name, m.signature]
-                    """;
-                session.run(createIndexQuery).consume();
-                log.info("Method full-text index created successfully");
-            } else {
-                log.info("Method full-text index already exists");
+            if (!existing.isEmpty()) {
+                log.info("Method full-text index already exists, dropping and recreating...");
+                try {
+                    session.run("DROP INDEX method_names").consume();
+                    log.info("Dropped existing method full-text index");
+                    Thread.sleep(1000);
+                } catch (Exception e) {
+                    log.warn("Failed to drop existing method full-text index: {}", e.getMessage());
+                }
             }
+
+            log.info("Creating full-text index 'method_names'");
+            String createIndexQuery = """
+                CREATE FULLTEXT INDEX method_names IF NOT EXISTS
+                FOR (m:Method) ON EACH [m.name, m.signature]
+                """;
+            session.run(createIndexQuery).consume();
+            log.info("Method full-text index created successfully");
         } catch (Exception e) {
             log.error("Failed to create method full-text index", e);
         }
@@ -515,17 +544,24 @@ public class VectorizationService {
             String checkQuery = "SHOW INDEXES WHERE name = 'class_names'";
             List<Record> existing = session.run(checkQuery).list();
 
-            if (existing.isEmpty()) {
-                log.info("Creating full-text index 'class_names'");
-                String createIndexQuery = """
-                    CREATE FULLTEXT INDEX class_names IF NOT EXISTS
-                    FOR (c:Class|Interface|Enum|AnnotationType) ON EACH [c.name, c.fullName]
-                    """;
-                session.run(createIndexQuery).consume();
-                log.info("Class full-text index created successfully");
-            } else {
-                log.info("Class full-text index already exists");
+            if (!existing.isEmpty()) {
+                log.info("Class full-text index already exists, dropping and recreating...");
+                try {
+                    session.run("DROP INDEX class_names").consume();
+                    log.info("Dropped existing class full-text index");
+                    Thread.sleep(1000);
+                } catch (Exception e) {
+                    log.warn("Failed to drop existing class full-text index: {}", e.getMessage());
+                }
             }
+
+            log.info("Creating full-text index 'class_names'");
+            String createIndexQuery = """
+                CREATE FULLTEXT INDEX class_names IF NOT EXISTS
+                FOR (c:Class|Interface|Enum|AnnotationType) ON EACH [c.name, c.fullName]
+                """;
+            session.run(createIndexQuery).consume();
+            log.info("Class full-text index created successfully");
         } catch (Exception e) {
             log.error("Failed to create class full-text index", e);
         }
@@ -540,17 +576,24 @@ public class VectorizationService {
             String checkQuery = "SHOW INDEXES WHERE name = 'description_content'";
             List<Record> existing = session.run(checkQuery).list();
 
-            if (existing.isEmpty()) {
-                log.info("Creating full-text index 'description_content'");
-                String createIndexQuery = """
-                    CREATE FULLTEXT INDEX description_content IF NOT EXISTS
-                    FOR (d:Description) ON EACH [d.content]
-                    """;
-                session.run(createIndexQuery).consume();
-                log.info("Description full-text index created successfully");
-            } else {
-                log.info("Description full-text index already exists");
+            if (!existing.isEmpty()) {
+                log.info("Description full-text index already exists, dropping and recreating...");
+                try {
+                    session.run("DROP INDEX description_content").consume();
+                    log.info("Dropped existing description full-text index");
+                    Thread.sleep(1000);
+                } catch (Exception e) {
+                    log.warn("Failed to drop existing description full-text index: {}", e.getMessage());
+                }
             }
+
+            log.info("Creating full-text index 'description_content'");
+            String createIndexQuery = """
+                CREATE FULLTEXT INDEX description_content IF NOT EXISTS
+                FOR (d:Description) ON EACH [d.content]
+                """;
+            session.run(createIndexQuery).consume();
+            log.info("Description full-text index created successfully");
         } catch (Exception e) {
             log.error("Failed to create description full-text index", e);
         }
