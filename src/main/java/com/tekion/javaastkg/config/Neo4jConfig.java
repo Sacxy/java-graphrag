@@ -1,10 +1,10 @@
 package com.tekion.javaastkg.config;
 
+import lombok.extern.slf4j.Slf4j;
 import org.neo4j.driver.*;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import lombok.extern.slf4j.Slf4j;
 
 /**
  * Neo4j database configuration.

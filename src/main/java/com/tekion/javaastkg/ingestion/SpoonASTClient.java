@@ -2,18 +2,15 @@ package com.tekion.javaastkg.ingestion;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tekion.javaastkg.model.AnalysisResult;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
 import org.springframework.web.reactive.function.client.ExchangeStrategies;
-import lombok.extern.slf4j.Slf4j;
-import reactor.core.publisher.Mono;
-import reactor.util.retry.Retry;
+import org.springframework.web.reactive.function.client.WebClient;
+
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * Client service for interacting with the Spoon AST service.

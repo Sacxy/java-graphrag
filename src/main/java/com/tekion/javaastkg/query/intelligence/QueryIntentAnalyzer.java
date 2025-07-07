@@ -1,7 +1,10 @@
 package com.tekion.javaastkg.query.intelligence;
 
 import com.tekion.javaastkg.query.services.LLMService;
-import lombok.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;

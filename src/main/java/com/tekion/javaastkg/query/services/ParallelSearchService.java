@@ -1,13 +1,14 @@
 package com.tekion.javaastkg.query.services;
 
 import com.tekion.javaastkg.query.services.EntityExtractor.ExtractedEntities;
-import com.tekion.javaastkg.query.services.EnhancedEntityExtractor;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.neo4j.driver.*;
+import org.neo4j.driver.Driver;
+import org.neo4j.driver.Session;
+import org.neo4j.driver.SessionConfig;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;

@@ -1,6 +1,5 @@
 package com.tekion.javaastkg.query.services;
 
-import com.tekion.javaastkg.model.GraphEntities;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;

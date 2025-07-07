@@ -1,13 +1,21 @@
 package com.tekion.javaastkg.query.services;
 
-import com.tekion.javaastkg.query.intelligence.*;
-import lombok.*;
+import com.tekion.javaastkg.query.intelligence.ExpansionQualityFilter;
+import com.tekion.javaastkg.query.intelligence.IntentBasedSearchStrategy;
+import com.tekion.javaastkg.query.intelligence.MultiLevelExpander;
+import com.tekion.javaastkg.query.intelligence.QueryIntentAnalyzer;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.List;
 
 /**
  * Enhanced entity extraction service that integrates intelligent query expansion.

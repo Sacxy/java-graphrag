@@ -6,14 +6,7 @@ import com.tekion.javaastkg.util.LLMRateLimiter;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import java.util.concurrent.CompletableFuture;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 /**
  * Service responsible for generating natural language summaries of retrieval results.

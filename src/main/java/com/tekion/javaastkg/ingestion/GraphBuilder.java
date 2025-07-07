@@ -1,16 +1,16 @@
 package com.tekion.javaastkg.ingestion;
 
-import com.tekion.javaastkg.model.AnalysisResult;
-import com.tekion.javaastkg.model.GraphNode;
-import com.tekion.javaastkg.model.GraphEdge;
-import com.tekion.javaastkg.model.GraphMetadata;
-import com.tekion.javaastkg.model.NodeType;
-import com.tekion.javaastkg.model.EdgeType;
-import org.neo4j.driver.*;
+import com.tekion.javaastkg.model.*;
+import lombok.extern.slf4j.Slf4j;
+import org.neo4j.driver.Driver;
+import org.neo4j.driver.Session;
+import org.neo4j.driver.SessionConfig;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import lombok.extern.slf4j.Slf4j;
-import java.util.*;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**

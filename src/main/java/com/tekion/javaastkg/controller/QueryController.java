@@ -2,12 +2,12 @@ package com.tekion.javaastkg.controller;
 
 import com.tekion.javaastkg.model.QueryModels;
 import com.tekion.javaastkg.query.QueryOrchestrator;
+import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import jakarta.validation.Valid;
 import java.util.Map;
 
 /**
