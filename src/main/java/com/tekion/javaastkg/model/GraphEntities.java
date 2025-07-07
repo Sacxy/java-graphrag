@@ -23,6 +23,8 @@ public class GraphEntities {
         private String className;
         private List<String> businessTags;
         private float[] embedding;
+        private String embeddingText;
+        private String vectorizedAt;
         private Map<String, Object> metadata;
     }
 
@@ -38,6 +40,9 @@ public class GraphEntities {
         private String type;
         private boolean isInterface;
         private boolean isAbstract;
+        private float[] embedding;
+        private String embeddingText;
+        private String vectorizedAt;
         private Map<String, Object> metadata;
     }
 

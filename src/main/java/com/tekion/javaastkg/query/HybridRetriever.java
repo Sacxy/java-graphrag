@@ -90,8 +90,9 @@ public class HybridRetriever {
             CompletableFuture<List<ParallelSearchService.SearchResult>> fullTextFuture = 
                 parallelSearchService.fullTextSearch(entities);
             
+            // Use unified vector search that includes method, class, and description embeddings
             CompletableFuture<List<ParallelSearchService.SearchResult>> vectorFuture = 
-                parallelSearchService.vectorSearch(queryVector);
+                parallelSearchService.unifiedVectorSearch(queryVector);
 
             // Step 4: Wait for both searches to complete
             List<ParallelSearchService.SearchResult> fullTextResults = fullTextFuture.join();

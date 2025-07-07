@@ -9,8 +9,9 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.neo4j.driver.*;
+import org.neo4j.driver.Record;
+import org.neo4j.driver.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -28,16 +29,16 @@ public class ReRankingService {
     private final SessionConfig sessionConfig;
     private final EmbeddingModel embeddingModel;
 
-    @Value("${query.retrieval.reranking.enabled:true}")
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.enabled:true}")
     private boolean reRankingEnabled;
 
-    @Value("${query.retrieval.reranking.threshold:0.6}")
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.threshold:0.6}")
     private double reRankThreshold;
 
-    @Value("${query.retrieval.reranking.final-limit:50}")
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.final-limit:50}")
     private int finalLimit;
 
-    @Value("${query.retrieval.reranking.batch-size:10}")
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.batch-size:10}")
     private int batchSize;
 
     public ReRankingService(Driver neo4jDriver,
@@ -69,20 +70,20 @@ public class ReRankingService {
             // 1. Generate query embedding
             float[] queryEmbedding = embeddingModel.embed(originalQuery).content().vector();
             
-            // 2. Get descriptions for all nodes
-            Map<String, String> nodeDescriptions = getNodeDescriptions(subGraph.getNodesList());
+            // 2. Get descriptions and precomputed embeddings for all nodes
+            Map<String, NodeEmbeddingData> nodeData = getNodeEmbeddingData(subGraph.getNodesList());
             
-            // 3. Score each node based on description similarity
+            // 3. Score each node based on precomputed embedding similarity
             List<RankedNode> rankedNodes = new ArrayList<>();
             
             for (GraphNode node : subGraph.getNodesList()) {
-                String description = nodeDescriptions.get(node.getId());
-                double similarity = calculateSimilarity(queryEmbedding, description);
+                NodeEmbeddingData data = nodeData.get(node.getId());
+                double similarity = getPrecomputedSimilarity(queryEmbedding, data);
                 
                 rankedNodes.add(RankedNode.builder()
                         .node(node)
                         .similarityScore(similarity)
-                        .description(description)
+                        .description(data != null ? data.getDescription() : "No description available")
                         .build());
             }
             
@@ -129,41 +130,73 @@ public class ReRankingService {
     }
 
     /**
-     * Gets descriptions for nodes from various sources
+     * Gets precomputed embeddings and descriptions for nodes from various sources
      */
-    private Map<String, String> getNodeDescriptions(List<GraphNode> nodes) {
-        Map<String, String> descriptions = new HashMap<>();
+    private Map<String, NodeEmbeddingData> getNodeEmbeddingData(List<GraphNode> nodes) {
+        Map<String, NodeEmbeddingData> nodeData = new HashMap<>();
         
         try (Session session = neo4jDriver.session(sessionConfig)) {
             // Process nodes in batches for efficiency
             for (int i = 0; i < nodes.size(); i += batchSize) {
                 List<GraphNode> batch = nodes.subList(i, Math.min(i + batchSize, nodes.size()));
-                Map<String, String> batchDescriptions = getDescriptionsForBatch(session, batch);
-                descriptions.putAll(batchDescriptions);
+                Map<String, NodeEmbeddingData> batchData = getEmbeddingDataForBatch(session, batch);
+                nodeData.putAll(batchData);
             }
         } catch (Exception e) {
-            log.error("Failed to fetch node descriptions", e);
+            log.error("Failed to fetch node embedding data", e);
         }
         
-        return descriptions;
+        return nodeData;
     }
 
     /**
-     * Gets descriptions for a batch of nodes
+     * Gets embedding data for a batch of nodes
      */
-    private Map<String, String> getDescriptionsForBatch(Session session, List<GraphNode> nodes) {
-        Map<String, String> descriptions = new HashMap<>();
+    private Map<String, NodeEmbeddingData> getEmbeddingDataForBatch(Session session, List<GraphNode> nodes) {
+        Map<String, NodeEmbeddingData> nodeData = new HashMap<>();
         
         for (GraphNode node : nodes) {
-            String description = getNodeDescription(session, node);
-            descriptions.put(node.getId(), description);
+            NodeEmbeddingData data = getNodeEmbeddingData(session, node);
+            nodeData.put(node.getId(), data);
         }
         
-        return descriptions;
+        return nodeData;
     }
 
     /**
-     * Gets description for a single node from multiple sources
+     * Gets embedding data for a single node from precomputed embeddings
+     */
+    private NodeEmbeddingData getNodeEmbeddingData(Session session, GraphNode node) {
+        String nodeId = node.getId();
+        String nodeType = node.getType().toLowerCase();
+        
+        try {
+            // Try to get precomputed embedding based on node type
+            switch (nodeType) {
+                case "method":
+                    return getMethodEmbeddingData(session, nodeId);
+                case "class":
+                case "interface":
+                case "enum":
+                    return getClassEmbeddingData(session, nodeId);
+                case "description":
+                    return getDescriptionEmbeddingData(session, nodeId);
+                case "filedoc":
+                    return getFileDocEmbeddingData(session, nodeId);
+                default:
+                    // For other node types, fall back to description-based approach
+                    String description = getNodeDescription(session, node);
+                    return new NodeEmbeddingData(null, description);
+            }
+        } catch (Exception e) {
+            log.debug("Failed to get embedding data for node {}: {}", nodeId, e.getMessage());
+            String fallbackDescription = getDescriptionFromProperties(node);
+            return new NodeEmbeddingData(null, fallbackDescription);
+        }
+    }
+
+    /**
+     * Gets description for a single node from multiple sources (fallback method)
      */
     private String getNodeDescription(Session session, GraphNode node) {
         String nodeId = node.getId();
@@ -272,18 +305,18 @@ public class ReRankingService {
     }
 
     /**
-     * Calculates similarity between query embedding and description
+     * Gets precomputed similarity between query embedding and node embeddings
      */
-    private double calculateSimilarity(float[] queryEmbedding, String description) {
-        if (description == null || description.trim().isEmpty()) {
+    private double getPrecomputedSimilarity(float[] queryEmbedding, NodeEmbeddingData data) {
+        if (data == null || data.getEmbedding() == null) {
+            log.debug("No precomputed embedding available for node");
             return 0.0;
         }
         
         try {
-            float[] descEmbedding = embeddingModel.embed(description).content().vector();
-            return cosineSimilarity(queryEmbedding, descEmbedding);
+            return cosineSimilarity(queryEmbedding, data.getEmbedding());
         } catch (Exception e) {
-            log.debug("Failed to calculate similarity for description: {}", e.getMessage());
+            log.debug("Failed to calculate similarity with precomputed embedding: {}", e.getMessage());
             return 0.0;
         }
     }
@@ -343,6 +376,178 @@ public class ReRankingService {
                         "reRankThreshold", reRankThreshold
                 ))
                 .build();
+    }
+
+    /**
+     * Gets method embedding data with precomputed embedding
+     */
+    private NodeEmbeddingData getMethodEmbeddingData(Session session, String nodeId) {
+        String query = """
+            MATCH (m:Method)
+            WHERE m.id = $nodeId
+            OPTIONAL MATCH (m)-[:HAS_DESCRIPTION]->(d:Description)
+            RETURN m.embedding as embedding,
+                   m.embeddingText as embeddingText,
+                   collect(d.content) as descriptions
+            LIMIT 1
+            """;
+        
+        try {
+            Result result = session.run(query, Map.of("nodeId", nodeId));
+            if (result.hasNext()) {
+                Record record = result.single();
+                
+                float[] embedding = null;
+                if (!record.get("embedding").isNull()) {
+                    List<Object> embeddingList = record.get("embedding").asList();
+                    embedding = new float[embeddingList.size()];
+                    for (int i = 0; i < embeddingList.size(); i++) {
+                        embedding[i] = ((Number) embeddingList.get(i)).floatValue();
+                    }
+                }
+                
+                String description = record.get("embeddingText").asString("");
+                if (description.isEmpty()) {
+                    List<String> descriptions = record.get("descriptions").asList(Value::asString);
+                    description = String.join(" ", descriptions);
+                }
+                
+                return new NodeEmbeddingData(embedding, description);
+            }
+        } catch (Exception e) {
+            log.debug("Failed to get method embedding data for {}: {}", nodeId, e.getMessage());
+        }
+        
+        return new NodeEmbeddingData(null, "Method node");
+    }
+    
+    /**
+     * Gets class embedding data with precomputed embedding
+     */
+    private NodeEmbeddingData getClassEmbeddingData(Session session, String nodeId) {
+        String query = """
+            MATCH (c:Class|Interface|Enum)
+            WHERE c.id = $nodeId
+            OPTIONAL MATCH (c)-[:HAS_DESCRIPTION]->(d:Description)
+            RETURN c.embedding as embedding,
+                   c.embeddingText as embeddingText,
+                   c.name as name,
+                   collect(d.content) as descriptions
+            LIMIT 1
+            """;
+        
+        try {
+            Result result = session.run(query, Map.of("nodeId", nodeId));
+            if (result.hasNext()) {
+                Record record = result.single();
+                
+                float[] embedding = null;
+                if (!record.get("embedding").isNull()) {
+                    List<Object> embeddingList = record.get("embedding").asList();
+                    embedding = new float[embeddingList.size()];
+                    for (int i = 0; i < embeddingList.size(); i++) {
+                        embedding[i] = ((Number) embeddingList.get(i)).floatValue();
+                    }
+                }
+                
+                String description = record.get("embeddingText").asString("");
+                if (description.isEmpty()) {
+                    List<String> descriptions = record.get("descriptions").asList(Value::asString);
+                    String name = record.get("name").asString("");
+                    description = "Class: " + name + " " + String.join(" ", descriptions);
+                }
+                
+                return new NodeEmbeddingData(embedding, description);
+            }
+        } catch (Exception e) {
+            log.debug("Failed to get class embedding data for {}: {}", nodeId, e.getMessage());
+        }
+        
+        return new NodeEmbeddingData(null, "Class node");
+    }
+    
+    /**
+     * Gets description embedding data
+     */
+    private NodeEmbeddingData getDescriptionEmbeddingData(Session session, String nodeId) {
+        String query = """
+            MATCH (d:Description)
+            WHERE d.id = $nodeId
+            RETURN d.embedding as embedding, d.content as content
+            LIMIT 1
+            """;
+        
+        try {
+            Result result = session.run(query, Map.of("nodeId", nodeId));
+            if (result.hasNext()) {
+                Record record = result.single();
+                
+                float[] embedding = null;
+                if (!record.get("embedding").isNull()) {
+                    List<Object> embeddingList = record.get("embedding").asList();
+                    embedding = new float[embeddingList.size()];
+                    for (int i = 0; i < embeddingList.size(); i++) {
+                        embedding[i] = ((Number) embeddingList.get(i)).floatValue();
+                    }
+                }
+                
+                String description = record.get("content").asString("");
+                return new NodeEmbeddingData(embedding, description);
+            }
+        } catch (Exception e) {
+            log.debug("Failed to get description embedding data for {}: {}", nodeId, e.getMessage());
+        }
+        
+        return new NodeEmbeddingData(null, "Description node");
+    }
+    
+    /**
+     * Gets file doc embedding data
+     */
+    private NodeEmbeddingData getFileDocEmbeddingData(Session session, String nodeId) {
+        String query = """
+            MATCH (f:FileDoc)
+            WHERE f.id = $nodeId
+            RETURN f.embedding as embedding, f.content as content, f.fileName as fileName
+            LIMIT 1
+            """;
+        
+        try {
+            Result result = session.run(query, Map.of("nodeId", nodeId));
+            if (result.hasNext()) {
+                Record record = result.single();
+                
+                float[] embedding = null;
+                if (!record.get("embedding").isNull()) {
+                    List<Object> embeddingList = record.get("embedding").asList();
+                    embedding = new float[embeddingList.size()];
+                    for (int i = 0; i < embeddingList.size(); i++) {
+                        embedding[i] = ((Number) embeddingList.get(i)).floatValue();
+                    }
+                }
+                
+                String description = record.get("content").asString("");
+                if (description.isEmpty()) {
+                    description = "File: " + record.get("fileName").asString("");
+                }
+                
+                return new NodeEmbeddingData(embedding, description);
+            }
+        } catch (Exception e) {
+            log.debug("Failed to get file doc embedding data for {}: {}", nodeId, e.getMessage());
+        }
+        
+        return new NodeEmbeddingData(null, "File document");
+    }
+
+    /**
+     * Data class for node embedding data
+     */
+    @Data
+    @AllArgsConstructor
+    private static class NodeEmbeddingData {
+        private float[] embedding;
+        private String description;
     }
 
     /**

@@ -9,6 +9,7 @@ import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.neo4j.driver.*;
 import org.neo4j.driver.Record;
+import org.neo4j.driver.Value;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
@@ -54,6 +55,8 @@ public class VectorizationService {
     public void vectorizeDocuments() {
         vectorizeDescriptions();
         vectorizeFileDocs();
+        vectorizeMethodNodes();
+        vectorizeClassNodes();
         createVectorIndexesIfNeeded();
     }
     
@@ -113,6 +116,64 @@ public class VectorizationService {
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
         log.info("Vectorization completed for {} file docs", fileDocs.size());
+    }
+    
+    /**
+     * Vectorizes Method nodes without embeddings
+     */
+    public void vectorizeMethodNodes() {
+        List<MethodToVectorize> methods = getMethodsWithoutEmbeddings();
+        log.info("Found {} methods to vectorize", methods.size());
+
+        if (methods.isEmpty()) {
+            return;
+        }
+
+        // Process in batches for efficiency
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        for (int i = 0; i < methods.size(); i += batchSize) {
+            List<MethodToVectorize> batch = methods.subList(i,
+                    Math.min(i + batchSize, methods.size()));
+
+            CompletableFuture<Void> future = CompletableFuture.runAsync(() ->
+                    processMethodBatch(batch), executorService);
+            futures.add(future);
+        }
+
+        // Wait for all batches to complete
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        log.info("Vectorization completed for {} methods", methods.size());
+    }
+    
+    /**
+     * Vectorizes Class nodes without embeddings
+     */
+    public void vectorizeClassNodes() {
+        List<ClassToVectorize> classes = getClassesWithoutEmbeddings();
+        log.info("Found {} classes to vectorize", classes.size());
+
+        if (classes.isEmpty()) {
+            return;
+        }
+
+        // Process in batches for efficiency
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        for (int i = 0; i < classes.size(); i += batchSize) {
+            List<ClassToVectorize> batch = classes.subList(i,
+                    Math.min(i + batchSize, classes.size()));
+
+            CompletableFuture<Void> future = CompletableFuture.runAsync(() ->
+                    processClassBatch(batch), executorService);
+            futures.add(future);
+        }
+
+        // Wait for all batches to complete
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        log.info("Vectorization completed for {} classes", classes.size());
     }
 
     /**
@@ -273,6 +334,8 @@ public class VectorizationService {
     private void createVectorIndexesIfNeeded() {
         createDescriptionVectorIndex();
         createFileDocVectorIndex();
+        createMethodVectorIndex();
+        createClassVectorIndex();
         createFullTextIndexesIfNeeded();
     }
     
@@ -349,6 +412,72 @@ public class VectorizationService {
             }
         } catch (Exception e) {
             log.error("Failed to create file doc vector index", e);
+        }
+    }
+    
+    /**
+     * Creates vector index for Method nodes
+     */
+    private void createMethodVectorIndex() {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            // Check if index exists
+            String checkQuery = "SHOW INDEXES WHERE name = 'method_embeddings'";
+            List<Record> existing = session.run(checkQuery).list();
+
+            if (existing.isEmpty()) {
+                log.info("Creating vector index 'method_embeddings'");
+
+                String createIndexQuery = String.format("""
+                    CREATE VECTOR INDEX method_embeddings IF NOT EXISTS
+                    FOR (m:Method) ON (m.embedding)
+                    OPTIONS { 
+                        indexConfig: {
+                            `vector.dimensions`: %d,
+                            `vector.similarity_function`: 'cosine'
+                        }
+                    }
+                    """, embeddingDimension);
+
+                session.run(createIndexQuery).consume();
+                log.info("Method vector index created successfully");
+            } else {
+                log.info("Method vector index already exists");
+            }
+        } catch (Exception e) {
+            log.error("Failed to create method vector index", e);
+        }
+    }
+    
+    /**
+     * Creates vector index for Class nodes
+     */
+    private void createClassVectorIndex() {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            // Check if index exists
+            String checkQuery = "SHOW INDEXES WHERE name = 'class_embeddings'";
+            List<Record> existing = session.run(checkQuery).list();
+
+            if (existing.isEmpty()) {
+                log.info("Creating vector index 'class_embeddings'");
+
+                String createIndexQuery = String.format("""
+                    CREATE VECTOR INDEX class_embeddings IF NOT EXISTS
+                    FOR (c:Class) ON (c.embedding)
+                    OPTIONS { 
+                        indexConfig: {
+                            `vector.dimensions`: %d,
+                            `vector.similarity_function`: 'cosine'
+                        }
+                    }
+                    """, embeddingDimension);
+
+                session.run(createIndexQuery).consume();
+                log.info("Class vector index created successfully");
+            } else {
+                log.info("Class vector index already exists");
+            }
+        } catch (Exception e) {
+            log.error("Failed to create class vector index", e);
         }
     }
 
@@ -450,6 +579,235 @@ public class VectorizationService {
         } catch (Exception e) {
             log.error("Failed to create file doc full-text index", e);
         }
+    }
+
+    /**
+     * Retrieves Method nodes that need vectorization
+     */
+    private List<MethodToVectorize> getMethodsWithoutEmbeddings() {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            String query = """
+                MATCH (m:Method)
+                WHERE m.embedding IS NULL
+                OPTIONAL MATCH (m)-[:HAS_DESCRIPTION]->(d:Description)
+                RETURN m.id as id,
+                       m.name as name,
+                       m.signature as signature,
+                       m.className as className,
+                       collect(d.content) as descriptions
+                LIMIT 1000
+                """;
+
+            return session.run(query)
+                    .list(record -> new MethodToVectorize(
+                            record.get("id").asString(),
+                            record.get("name").asString(),
+                            record.get("signature").asString(),
+                            record.get("className").asString(),
+                            record.get("descriptions").asList(Value::asString)
+                    ));
+        }
+    }
+    
+    /**
+     * Retrieves Class nodes that need vectorization
+     */
+    private List<ClassToVectorize> getClassesWithoutEmbeddings() {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            String query = """
+                MATCH (c:Class)
+                WHERE c.embedding IS NULL
+                OPTIONAL MATCH (c)-[:HAS_DESCRIPTION]->(d:Description)
+                RETURN c.id as id,
+                       c.name as name,
+                       c.fullName as fullName,
+                       c.packageName as packageName,
+                       c.type as type,
+                       collect(d.content) as descriptions
+                LIMIT 1000
+                """;
+
+            return session.run(query)
+                    .list(record -> new ClassToVectorize(
+                            record.get("id").asString(),
+                            record.get("name").asString(),
+                            record.get("fullName").asString(),
+                            record.get("packageName").asString(),
+                            record.get("type").asString(),
+                            record.get("descriptions").asList(Value::asString)
+                    ));
+        }
+    }
+    
+    /**
+     * Processes a batch of methods for vectorization
+     */
+    private void processMethodBatch(List<MethodToVectorize> batch) {
+        log.debug("Processing method vectorization batch of {} items", batch.size());
+
+        try {
+            // Build embedding text for each method
+            List<TextSegment> documents = batch.stream()
+                    .map(this::buildMethodEmbeddingText)
+                    .map(TextSegment::from)
+                    .collect(Collectors.toList());
+
+            // Generate embeddings in batch
+            List<Embedding> embeddings = documentEmbeddingModel.embedAll(documents).content();
+
+            // Store embeddings in Neo4j
+            storeMethodEmbeddings(batch, embeddings);
+
+        } catch (Exception e) {
+            log.error("Failed to process method vectorization batch", e);
+        }
+    }
+    
+    /**
+     * Processes a batch of classes for vectorization
+     */
+    private void processClassBatch(List<ClassToVectorize> batch) {
+        log.debug("Processing class vectorization batch of {} items", batch.size());
+
+        try {
+            // Build embedding text for each class
+            List<TextSegment> documents = batch.stream()
+                    .map(this::buildClassEmbeddingText)
+                    .map(TextSegment::from)
+                    .collect(Collectors.toList());
+
+            // Generate embeddings in batch
+            List<Embedding> embeddings = documentEmbeddingModel.embedAll(documents).content();
+
+            // Store embeddings in Neo4j
+            storeClassEmbeddings(batch, embeddings);
+
+        } catch (Exception e) {
+            log.error("Failed to process class vectorization batch", e);
+        }
+    }
+    
+    /**
+     * Builds embedding text for a method node
+     */
+    private String buildMethodEmbeddingText(MethodToVectorize method) {
+        StringBuilder text = new StringBuilder();
+        text.append("Method: ").append(method.getName())
+            .append(" in class ").append(method.getClassName())
+            .append(". Signature: ").append(method.getSignature());
+            
+        if (method.getDescriptions() != null && !method.getDescriptions().isEmpty()) {
+            text.append(". Description: ");
+            text.append(String.join(" ", method.getDescriptions()));
+        }
+        
+        return text.toString();
+    }
+    
+    /**
+     * Builds embedding text for a class node
+     */
+    private String buildClassEmbeddingText(ClassToVectorize classNode) {
+        StringBuilder text = new StringBuilder();
+        text.append("Class: ").append(classNode.getName());
+        
+        if (classNode.getPackageName() != null) {
+            text.append(" in package ").append(classNode.getPackageName());
+        }
+        
+        if (classNode.getType() != null) {
+            text.append(". Type: ").append(classNode.getType());
+        }
+        
+        if (classNode.getDescriptions() != null && !classNode.getDescriptions().isEmpty()) {
+            text.append(". Description: ");
+            text.append(String.join(" ", classNode.getDescriptions()));
+        }
+        
+        return text.toString();
+    }
+    
+    /**
+     * Stores method embeddings in Neo4j in batch
+     */
+    private void storeMethodEmbeddings(List<MethodToVectorize> methods, List<Embedding> embeddings) {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            String query = """
+                UNWIND $updates AS update
+                MATCH (m:Method {id: update.id})
+                SET m.embedding = update.embedding,
+                    m.embeddingText = update.embeddingText,
+                    m.vectorizedAt = datetime()
+                RETURN count(m) as updated
+                """;
+
+            List<Map<String, Object>> updates = new ArrayList<>();
+            for (int i = 0; i < methods.size(); i++) {
+                updates.add(Map.of(
+                        "id", methods.get(i).getId(),
+                        "embedding", embeddings.get(i).vector(),
+                        "embeddingText", buildMethodEmbeddingText(methods.get(i))
+                ));
+            }
+
+            session.run(query, Map.of("updates", updates)).consume();
+            log.debug("Stored {} method embeddings in Neo4j", updates.size());
+        }
+    }
+    
+    /**
+     * Stores class embeddings in Neo4j in batch
+     */
+    private void storeClassEmbeddings(List<ClassToVectorize> classes, List<Embedding> embeddings) {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            String query = """
+                UNWIND $updates AS update
+                MATCH (c:Class {id: update.id})
+                SET c.embedding = update.embedding,
+                    c.embeddingText = update.embeddingText,
+                    c.vectorizedAt = datetime()
+                RETURN count(c) as updated
+                """;
+
+            List<Map<String, Object>> updates = new ArrayList<>();
+            for (int i = 0; i < classes.size(); i++) {
+                updates.add(Map.of(
+                        "id", classes.get(i).getId(),
+                        "embedding", embeddings.get(i).vector(),
+                        "embeddingText", buildClassEmbeddingText(classes.get(i))
+                ));
+            }
+
+            session.run(query, Map.of("updates", updates)).consume();
+            log.debug("Stored {} class embeddings in Neo4j", updates.size());
+        }
+    }
+
+    /**
+     * Data class for methods to vectorize
+     */
+    @Data
+    @AllArgsConstructor
+    private static class MethodToVectorize {
+        private String id;
+        private String name;
+        private String signature;
+        private String className;
+        private List<String> descriptions;
+    }
+    
+    /**
+     * Data class for classes to vectorize
+     */
+    @Data
+    @AllArgsConstructor
+    private static class ClassToVectorize {
+        private String id;
+        private String name;
+        private String fullName;
+        private String packageName;
+        private String type;
+        private List<String> descriptions;
     }
 
     /**

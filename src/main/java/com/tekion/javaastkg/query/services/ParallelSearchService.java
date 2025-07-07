@@ -283,6 +283,124 @@ public class ParallelSearchService {
     }
 
     /**
+     * Search method embeddings using vector similarity
+     */
+    @Async
+    public CompletableFuture<List<SearchResult>> searchMethodEmbeddings(float[] queryEmbedding) {
+        log.debug("Starting method embedding vector search");
+        
+        List<SearchResult> results = new ArrayList<>();
+        
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            String query = """
+                CALL db.index.vector.queryNodes('method_embeddings', $k, $queryVector)
+                YIELD node, score
+                RETURN node.id as nodeId,
+                       node.name as name,
+                       node.signature as signature,
+                       node.className as className,
+                       score,
+                       'method' as type
+                ORDER BY score DESC
+                """;
+
+            results = session.run(query, Map.of("k", vectorSearchLimit, "queryVector", queryEmbedding))
+                    .list(record -> SearchResult.builder()
+                            .nodeId(record.get("nodeId").asString())
+                            .name(record.get("name").asString())
+                            .signature(record.get("signature").asString())
+                            .className(record.get("className").asString())
+                            .score(record.get("score").asDouble())
+                            .type(record.get("type").asString())
+                            .searchType("semantic")
+                            .build());
+
+            log.debug("Method embedding search completed. Found {} results", results.size());
+            
+        } catch (Exception e) {
+            log.error("Method embedding search failed", e);
+        }
+        
+        return CompletableFuture.completedFuture(results);
+    }
+
+    /**
+     * Search class embeddings using vector similarity
+     */
+    @Async
+    public CompletableFuture<List<SearchResult>> searchClassEmbeddings(float[] queryEmbedding) {
+        log.debug("Starting class embedding vector search");
+        
+        List<SearchResult> results = new ArrayList<>();
+        
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            String query = """
+                CALL db.index.vector.queryNodes('class_embeddings', $k, $queryVector)
+                YIELD node, score
+                RETURN node.id as nodeId,
+                       node.name as name,
+                       node.fullName as signature,
+                       node.packageName as className,
+                       score,
+                       labels(node)[0] as type
+                ORDER BY score DESC
+                """;
+
+            results = session.run(query, Map.of("k", vectorSearchLimit, "queryVector", queryEmbedding))
+                    .list(record -> SearchResult.builder()
+                            .nodeId(record.get("nodeId").asString())
+                            .name(record.get("name").asString())
+                            .signature(record.get("signature").asString())
+                            .className(record.get("className").asString())
+                            .score(record.get("score").asDouble())
+                            .type(record.get("type").asString().toLowerCase())
+                            .searchType("semantic")
+                            .build());
+
+            log.debug("Class embedding search completed. Found {} results", results.size());
+            
+        } catch (Exception e) {
+            log.error("Class embedding search failed", e);
+        }
+        
+        return CompletableFuture.completedFuture(results);
+    }
+
+    /**
+     * Unified vector search across all node types with embeddings
+     */
+    @Async
+    public CompletableFuture<List<SearchResult>> unifiedVectorSearch(float[] queryEmbedding) {
+        log.debug("Starting unified vector search across all node types");
+        
+        List<CompletableFuture<List<SearchResult>>> searchFutures = new ArrayList<>();
+        
+        // Search all available vector indexes
+        searchFutures.add(searchMethodEmbeddings(queryEmbedding));
+        searchFutures.add(searchClassEmbeddings(queryEmbedding));
+        searchFutures.add(vectorSearch(queryEmbedding)); // Existing description search
+        
+        // Combine all results
+        return CompletableFuture.allOf(searchFutures.toArray(new CompletableFuture[0]))
+                .thenApply(v -> {
+                    List<SearchResult> allResults = new ArrayList<>();
+                    for (CompletableFuture<List<SearchResult>> future : searchFutures) {
+                        try {
+                            allResults.addAll(future.get());
+                        } catch (Exception e) {
+                            log.error("Failed to get results from search future", e);
+                        }
+                    }
+                    
+                    // Sort by score and limit results
+                    return allResults.stream()
+                            .sorted((a, b) -> Double.compare(b.getScore(), a.getScore()))
+                            .limit(vectorSearchLimit * 2) // Allow more results for unified search
+                            .toList();
+                });
+    }
+
+    /**
      * Data class for search results
      */
     @Data
