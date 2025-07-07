@@ -25,8 +25,8 @@ import org.springframework.core.io.ClassPathResource;
 import java.util.stream.Collectors;
 
 /**
- * Service responsible for enriching method nodes with semantic information using LLMs.
- * Processes methods in parallel for efficiency.
+ * Service responsible for creating DESCRIPTION nodes with LLM-generated semantic information.
+ * Creates separate description nodes linked to method nodes via HAS_DESCRIPTION relationships.
  */
 @Service
 @Slf4j
@@ -84,11 +84,11 @@ public class SemanticEnricher {
     }
 
     /**
-     * Enriches all unenriched methods with semantic information
+     * Creates DESCRIPTION nodes for all methods that don't have them yet
      */
-    public void enrichMethods() {
-        List<MethodToEnrich> methods = findUnenrichedMethods();
-        log.info("Found {} methods to enrich semantically", methods.size());
+    public void createDescriptionNodes() {
+        List<MethodToEnrich> methods = findMethodsWithoutDescriptions();
+        log.info("Found {} methods needing description nodes", methods.size());
         if (methods.isEmpty()) {
             return;
         }
@@ -112,25 +112,20 @@ public class SemanticEnricher {
         // Wait for all batches to complete
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-        log.info("Semantic enrichment completed for {} methods", methods.size());
+        log.info("Description node creation completed for {} methods", methods.size());
     }
 
     /**
-     * Finds all methods that haven't been enriched yet
+     * Finds all methods that don't have DESCRIPTION nodes yet
      */
-    private List<MethodToEnrich> findUnenrichedMethods() {
+    private List<MethodToEnrich> findMethodsWithoutDescriptions() {
         try (Session session = neo4jDriver.session(sessionConfig)) {
-            // First, let's check what properties are available
-            String checkQuery = "MATCH (m:Method) RETURN m LIMIT 1";
-            Result checkResult = session.run(checkQuery);
-            if (checkResult.hasNext()) {
-                log.info("Sample Method node properties: {}", checkResult.single().get("m").asNode().asMap());
-            }
-            
-            // Updated query - all properties are flattened on the node, not in a nested properties map
+            // Find methods that don't have HAS_DESCRIPTION relationships to description nodes
             String query = """
                 MATCH (m:Method)
-                WHERE m.summary IS NULL
+                WHERE NOT EXISTS {
+                    (m)-[:HAS_DESCRIPTION]->(:Description)
+                }
                 RETURN m.id as id,
                        m.signature as signature,
                        m.name as name,
@@ -182,7 +177,7 @@ public class SemanticEnricher {
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
             
-            log.info("Found {} unenriched methods", methods.size());
+            log.info("Found {} methods without description nodes", methods.size());
             return methods;
         }
     }
@@ -198,13 +193,13 @@ public class SemanticEnricher {
                 // Read method code
                 String code = readMethodCode(method);
 
-                // Get enrichment from LLM
+                // Get description from LLM
                 EnrichmentResult enrichment = callLLMForEnrichment(method, code);
 
-                // Update Neo4j  
-                updateMethodNode(method.id, enrichment);
+                // Create description node and relationship
+                createDescriptionNode(method.id, enrichment, method.filePath);
 
-                log.info("Successfully enriched method: {}", method.signature);
+                log.info("Successfully created description for method: {}", method.signature);
 
             } catch (Exception e) {
                 log.error("Failed to enrich method: {}", method.signature, e);
@@ -264,46 +259,44 @@ public class SemanticEnricher {
 
             // Return default enrichment on failure
             return EnrichmentResult.builder()
-                    .summary("Method " + method.name + " in " + method.className + "Response: " + response)
-                    .detailedExplanation("Analysis pending")
-                    .businessTags(List.of("unanalyzed"))
-                    .technicalTags(List.of("java"))
-                    .complexity("unknown")
+                    .content("Method " + method.name + " in " + method.className + " - analysis pending due to processing error.")
                     .build();
         }
     }
 
     /**
-     * Updates the method node in Neo4j with enrichment data
+     * Creates a DESCRIPTION node and links it to the method via HAS_DESCRIPTION relationship
      */
-    private void updateMethodNode(String methodId, EnrichmentResult enrichment) {
+    private void createDescriptionNode(String methodId, EnrichmentResult enrichment, String sourceFile) {
         try (Session session = neo4jDriver.session(sessionConfig)) {
-            // Match by unique ID which is more reliable
+            // Create description node and relationship
+            String descriptionId = "desc_" + methodId + "_" + UUID.randomUUID().toString().substring(0, 8);
+            
             String query = """
                 MATCH (m:Method {id: $methodId})
-                SET m.summary = $summary,
-                    m.detailedExplanation = $detailedExplanation,
-                    m.businessTags = $businessTags,
-                    m.technicalTags = $technicalTags,
-                    m.complexity = $complexity,
-                    m.enrichedAt = datetime()
-                RETURN count(m) as updated
+                CREATE (d:Description {
+                    id: $descriptionId,
+                    content: $content,
+                    type: 'llm_generated',
+                    createdAt: datetime(),
+                    sourceFile: $sourceFile
+                })
+                CREATE (m)-[:HAS_DESCRIPTION]->(d)
+                RETURN count(d) as created
                 """;
 
             Result result = session.run(query, Map.of(
                     "methodId", methodId,
-                    "summary", enrichment.getSummary(),
-                    "detailedExplanation", enrichment.getDetailedExplanation(),
-                    "businessTags", enrichment.getBusinessTags(),
-                    "technicalTags", enrichment.getTechnicalTags(),
-                    "complexity", enrichment.getComplexity()
+                    "descriptionId", descriptionId,
+                    "content", enrichment.getContent(),
+                    "sourceFile", sourceFile
             ));
             
-            int updatedCount = result.single().get("updated").asInt();
-            if (updatedCount > 0) {
-                log.info("Successfully updated method: {}", methodId);
+            int createdCount = result.single().get("created").asInt();
+            if (createdCount > 0) {
+                log.info("Successfully created description node for method: {}", methodId);
             } else {
-                log.warn("No method found with ID: {}", methodId);
+                log.warn("Failed to create description node for method: {}", methodId);
             }
         }
     }
@@ -336,10 +329,6 @@ public class SemanticEnricher {
     @lombok.NoArgsConstructor
     @lombok.AllArgsConstructor
     public static class EnrichmentResult {
-        private String summary;
-        private String detailedExplanation;
-        private List<String> businessTags;
-        private List<String> technicalTags;
-        private String complexity;
+        private String content;
     }
 }

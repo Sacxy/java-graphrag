@@ -20,7 +20,7 @@ import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 /**
- * Service responsible for generating and storing vector embeddings for enriched methods.
+ * Service responsible for generating and storing vector embeddings for Description and FileDoc nodes.
  * Uses batching and parallel processing for efficiency.
  */
 @Service
@@ -29,201 +29,278 @@ public class VectorizationService {
 
     private final Driver neo4jDriver;
     private final SessionConfig sessionConfig;
-    private final EmbeddingModel embeddingModel;
+    private final EmbeddingModel documentEmbeddingModel;
     private final ExecutorService executorService;
 
     @org.springframework.beans.factory.annotation.Value("${ingestion.batch.size:50}")
     private int batchSize;
 
-    @org.springframework.beans.factory.annotation.Value("${llm.voyage.dimension}")
+    @org.springframework.beans.factory.annotation.Value("${llm.voyage.dimension:1024}")
     private int embeddingDimension;
 
     @Autowired
     public VectorizationService(Driver neo4jDriver,
                                 SessionConfig sessionConfig,
-                                @Qualifier("documentEmbeddingModel") EmbeddingModel embeddingModel) {
+                                @Qualifier("documentEmbeddingModel") EmbeddingModel documentEmbeddingModel) {
         this.neo4jDriver = neo4jDriver;
         this.sessionConfig = sessionConfig;
-        this.embeddingModel = embeddingModel;
+        this.documentEmbeddingModel = documentEmbeddingModel;
         this.executorService = Executors.newFixedThreadPool(3);
     }
 
     /**
-     * Vectorizes all enriched methods that don't have embeddings yet
+     * Vectorizes all Description and FileDoc nodes that don't have embeddings yet
      */
-    public void vectorizeEnrichedMethods() {
-        List<MethodToVectorize> methods = getEnrichedMethodsWithoutEmbeddings();
-        log.info("Found {} enriched methods to vectorize", methods.size());
+    public void vectorizeDocuments() {
+        vectorizeDescriptions();
+        vectorizeFileDocs();
+        createVectorIndexesIfNeeded();
+    }
+    
+    /**
+     * Vectorizes Description nodes without embeddings
+     */
+    public void vectorizeDescriptions() {
+        List<DocumentToVectorize> descriptions = getDescriptionsWithoutEmbeddings();
+        log.info("Found {} descriptions to vectorize", descriptions.size());
 
-        if (methods.isEmpty()) {
-            createVectorIndexIfNeeded();
+        if (descriptions.isEmpty()) {
             return;
         }
 
         // Process in batches for efficiency
         List<CompletableFuture<Void>> futures = new ArrayList<>();
 
-        for (int i = 0; i < methods.size(); i += batchSize) {
-            List<MethodToVectorize> batch = methods.subList(i,
-                    Math.min(i + batchSize, methods.size()));
+        for (int i = 0; i < descriptions.size(); i += batchSize) {
+            List<DocumentToVectorize> batch = descriptions.subList(i,
+                    Math.min(i + batchSize, descriptions.size()));
 
             CompletableFuture<Void> future = CompletableFuture.runAsync(() ->
-                    processBatch(batch), executorService);
+                    processDescriptionBatch(batch), executorService);
             futures.add(future);
         }
 
         // Wait for all batches to complete
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-        // Create vector index after all embeddings are stored
-        createVectorIndexIfNeeded();
+        log.info("Vectorization completed for {} descriptions", descriptions.size());
+    }
+    
+    /**
+     * Vectorizes FileDoc nodes without embeddings
+     */
+    public void vectorizeFileDocs() {
+        List<DocumentToVectorize> fileDocs = getFileDocsWithoutEmbeddings();
+        log.info("Found {} file docs to vectorize", fileDocs.size());
 
-        log.info("Vectorization completed for {} methods", methods.size());
+        if (fileDocs.isEmpty()) {
+            return;
+        }
+
+        // Process in batches for efficiency
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        for (int i = 0; i < fileDocs.size(); i += batchSize) {
+            List<DocumentToVectorize> batch = fileDocs.subList(i,
+                    Math.min(i + batchSize, fileDocs.size()));
+
+            CompletableFuture<Void> future = CompletableFuture.runAsync(() ->
+                    processFileDocBatch(batch), executorService);
+            futures.add(future);
+        }
+
+        // Wait for all batches to complete
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        log.info("Vectorization completed for {} file docs", fileDocs.size());
     }
 
     /**
-     * Retrieves enriched methods that need vectorization
+     * Retrieves Description nodes that need vectorization
      */
-    private List<MethodToVectorize> getEnrichedMethodsWithoutEmbeddings() {
+    private List<DocumentToVectorize> getDescriptionsWithoutEmbeddings() {
         try (Session session = neo4jDriver.session(sessionConfig)) {
             String query = """
-                MATCH (m:Method)
-                WHERE m.summary IS NOT NULL
-                  AND m.embedding IS NULL
-                RETURN m.id as id,
-                       m.signature as signature,
-                       m.name as name,
-                       m.summary as summary,
-                       m.detailedExplanation as explanation,
-                       m.businessTags as businessTags,
-                       m.technicalTags as technicalTags,
-                       COALESCE(m.returnType, 'void') as returnType,
-                       COALESCE(m.className, 'Unknown') as className,
-                       COALESCE(m.isStatic, false) as isStatic,
-                       COALESCE(m.isPublic, true) as isPublic,
-                       COALESCE(m.isAbstract, false) as isAbstract,
-                       COALESCE(m.parameterCount, 0) as parameterCount,
-                       COALESCE(m.complexity, 'unknown') as complexity
+                MATCH (d:Description)
+                WHERE d.embedding IS NULL
+                  AND d.content IS NOT NULL
+                RETURN d.id as id,
+                       d.content as content,
+                       d.type as type,
+                       d.sourceFile as sourceFile
                 LIMIT 1000
                 """;
 
             return session.run(query)
-                    .list(record -> new MethodToVectorize(
+                    .list(record -> new DocumentToVectorize(
                             record.get("id").asString(),
-                            record.get("signature").asString(),
-                            record.get("name").asString(),
-                            record.get("summary").asString(),
-                            record.get("explanation").asString(),
-                            record.get("businessTags").asList(Value::asString),
-                            record.get("technicalTags").asList(Value::asString),
-                            record.get("returnType").asString(),
-                            record.get("className").asString(),
-                            record.get("isStatic").asBoolean(),
-                            record.get("isPublic").asBoolean(),
-                            record.get("isAbstract").asBoolean(),
-                            record.get("parameterCount").asInt(),
-                            record.get("complexity").asString()
+                            record.get("content").asString(),
+                            record.get("type").asString(),
+                            record.get("sourceFile").asString(),
+                            "Description"
+                    ));
+        }
+    }
+    
+    /**
+     * Retrieves FileDoc nodes that need vectorization
+     */
+    private List<DocumentToVectorize> getFileDocsWithoutEmbeddings() {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            String query = """
+                MATCH (f:FileDoc)
+                WHERE f.embedding IS NULL
+                  AND f.content IS NOT NULL
+                RETURN f.id as id,
+                       f.content as content,
+                       f.fileName as fileName,
+                       f.packageName as packageName
+                LIMIT 1000
+                """;
+
+            return session.run(query)
+                    .list(record -> new DocumentToVectorize(
+                            record.get("id").asString(),
+                            record.get("content").asString(),
+                            record.get("fileName").asString(),
+                            record.get("packageName").asString(),
+                            "FileDoc"
                     ));
         }
     }
 
     /**
-     * Processes a batch of methods for vectorization
+     * Processes a batch of descriptions for vectorization
      */
-    private void processBatch(List<MethodToVectorize> batch) {
-        log.debug("Processing vectorization batch of {} methods", batch.size());
+    private void processDescriptionBatch(List<DocumentToVectorize> batch) {
+        log.debug("Processing description vectorization batch of {} items", batch.size());
 
         try {
-            // Create composite documents for each method
+            // Create text segments for each description
             List<TextSegment> documents = batch.stream()
-                    .map(this::createCompositeDocument)
+                    .map(doc -> TextSegment.from(doc.getContent()))
                     .collect(Collectors.toList());
 
             // Generate embeddings in batch
-            List<Embedding> embeddings = embeddingModel.embedAll(documents).content();
+            List<Embedding> embeddings = documentEmbeddingModel.embedAll(documents).content();
 
             // Store embeddings in Neo4j
-            storeEmbeddings(batch, embeddings);
+            storeDescriptionEmbeddings(batch, embeddings);
 
         } catch (Exception e) {
-            log.error("Failed to process vectorization batch", e);
+            log.error("Failed to process description vectorization batch", e);
+        }
+    }
+    
+    /**
+     * Processes a batch of file docs for vectorization
+     */
+    private void processFileDocBatch(List<DocumentToVectorize> batch) {
+        log.debug("Processing file doc vectorization batch of {} items", batch.size());
+
+        try {
+            // Create text segments for each file doc
+            List<TextSegment> documents = batch.stream()
+                    .map(doc -> TextSegment.from(doc.getContent()))
+                    .collect(Collectors.toList());
+
+            // Generate embeddings in batch
+            List<Embedding> embeddings = documentEmbeddingModel.embedAll(documents).content();
+
+            // Store embeddings in Neo4j
+            storeFileDocEmbeddings(batch, embeddings);
+
+        } catch (Exception e) {
+            log.error("Failed to process file doc vectorization batch", e);
         }
     }
 
     /**
-     * Creates a composite document that captures all relevant information about a method
+     * Stores description embeddings in Neo4j in batch
      */
-    private TextSegment createCompositeDocument(MethodToVectorize method) {
-        StringBuilder doc = new StringBuilder();
-
-        // Include structured information
-        doc.append("Method: ").append(method.name).append("\n");
-        doc.append("Class: ").append(method.className).append("\n");
-        doc.append("Signature: ").append(method.signature).append("\n");
-        doc.append("Returns: ").append(method.returnType).append("\n");
-        doc.append("Parameters: ").append(method.parameterCount).append("\n");
-        doc.append("Complexity: ").append(method.complexity).append("\n");
-        
-        // Include method modifiers
-        if (method.isStatic) doc.append("Static method\n");
-        if (method.isAbstract) doc.append("Abstract method\n");
-        if (!method.isPublic) doc.append("Non-public method\n");
-
-        // Include semantic information
-        doc.append("Summary: ").append(method.summary).append("\n");
-        doc.append("Description: ").append(method.explanation).append("\n");
-
-        // Include tags for better semantic matching
-        if (!method.businessTags.isEmpty()) {
-            doc.append("Business Context: ").append(String.join(", ", method.businessTags)).append("\n");
-        }
-        if (!method.technicalTags.isEmpty()) {
-            doc.append("Technical Tags: ").append(String.join(", ", method.technicalTags)).append("\n");
-        }
-        return TextSegment.from(doc.toString());
-    }
-
-    /**
-     * Stores embeddings in Neo4j in batch
-     */
-    private void storeEmbeddings(List<MethodToVectorize> methods, List<Embedding> embeddings) {
+    private void storeDescriptionEmbeddings(List<DocumentToVectorize> descriptions, List<Embedding> embeddings) {
         try (Session session = neo4jDriver.session(sessionConfig)) {
             String query = """
                 UNWIND $updates AS update
-                MATCH (m:Method {id: update.id})
-                SET m.embedding = update.embedding,
-                    m.vectorizedAt = datetime()
-                RETURN count(m) as updated
+                MATCH (d:Description {id: update.id})
+                SET d.embedding = update.embedding,
+                    d.vectorizedAt = datetime()
+                RETURN count(d) as updated
                 """;
 
             List<Map<String, Object>> updates = new ArrayList<>();
-            for (int i = 0; i < methods.size(); i++) {
+            for (int i = 0; i < descriptions.size(); i++) {
                 updates.add(Map.of(
-                        "id", methods.get(i).getId(),
+                        "id", descriptions.get(i).getId(),
                         "embedding", embeddings.get(i).vector()
                 ));
             }
 
             session.run(query, Map.of("updates", updates)).consume();
-            log.debug("Stored {} embeddings in Neo4j", updates.size());
+            log.debug("Stored {} description embeddings in Neo4j", updates.size());
+        }
+    }
+    
+    /**
+     * Stores file doc embeddings in Neo4j in batch
+     */
+    private void storeFileDocEmbeddings(List<DocumentToVectorize> fileDocs, List<Embedding> embeddings) {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            String query = """
+                UNWIND $updates AS update
+                MATCH (f:FileDoc {id: update.id})
+                SET f.embedding = update.embedding,
+                    f.vectorizedAt = datetime()
+                RETURN count(f) as updated
+                """;
+
+            List<Map<String, Object>> updates = new ArrayList<>();
+            for (int i = 0; i < fileDocs.size(); i++) {
+                updates.add(Map.of(
+                        "id", fileDocs.get(i).getId(),
+                        "embedding", embeddings.get(i).vector()
+                ));
+            }
+
+            session.run(query, Map.of("updates", updates)).consume();
+            log.debug("Stored {} file doc embeddings in Neo4j", updates.size());
         }
     }
 
     /**
-     * Creates a vector index in Neo4j for similarity search
+     * Creates vector indexes in Neo4j for similarity search
      */
-    private void createVectorIndexIfNeeded() {
+    private void createVectorIndexesIfNeeded() {
+        createDescriptionVectorIndex();
+        createFileDocVectorIndex();
+        createFullTextIndexesIfNeeded();
+    }
+    
+    /**
+     * Creates full-text indexes for search functionality
+     */
+    private void createFullTextIndexesIfNeeded() {
+        createMethodFullTextIndex();
+        createClassFullTextIndex();
+        createDescriptionFullTextIndex();
+        createFileDocFullTextIndex();
+    }
+    
+    /**
+     * Creates vector index for Description nodes
+     */
+    private void createDescriptionVectorIndex() {
         try (Session session = neo4jDriver.session(sessionConfig)) {
             // Check if index exists
-            String checkQuery = "SHOW INDEXES WHERE name = 'method_embeddings'";
+            String checkQuery = "SHOW INDEXES WHERE name = 'description_embeddings'";
             List<Record> existing = session.run(checkQuery).list();
 
             if (existing.isEmpty()) {
-                log.info("Creating vector index 'method_embeddings'");
+                log.info("Creating vector index 'description_embeddings'");
 
                 String createIndexQuery = String.format("""
-                    CREATE VECTOR INDEX method_embeddings IF NOT EXISTS
-                    FOR (m:Method) ON (m.embedding)
+                    CREATE VECTOR INDEX description_embeddings IF NOT EXISTS
+                    FOR (d:Description) ON (d.embedding)
                     OPTIONS { 
                         indexConfig: {
                             `vector.dimensions`: %d,
@@ -233,34 +310,158 @@ public class VectorizationService {
                     """, embeddingDimension);
 
                 session.run(createIndexQuery).consume();
-                log.info("Vector index created successfully");
+                log.info("Description vector index created successfully");
             } else {
-                log.info("Vector index already exists");
+                log.info("Description vector index already exists");
             }
         } catch (Exception e) {
-            log.error("Failed to create vector index", e);
+            log.error("Failed to create description vector index", e);
+        }
+    }
+    
+    /**
+     * Creates vector index for FileDoc nodes
+     */
+    private void createFileDocVectorIndex() {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            // Check if index exists
+            String checkQuery = "SHOW INDEXES WHERE name = 'file_doc_embeddings'";
+            List<Record> existing = session.run(checkQuery).list();
+
+            if (existing.isEmpty()) {
+                log.info("Creating vector index 'file_doc_embeddings'");
+
+                String createIndexQuery = String.format("""
+                    CREATE VECTOR INDEX file_doc_embeddings IF NOT EXISTS
+                    FOR (f:FileDoc) ON (f.embedding)
+                    OPTIONS { 
+                        indexConfig: {
+                            `vector.dimensions`: %d,
+                            `vector.similarity_function`: 'cosine'
+                        }
+                    }
+                    """, embeddingDimension);
+
+                session.run(createIndexQuery).consume();
+                log.info("FileDoc vector index created successfully");
+            } else {
+                log.info("FileDoc vector index already exists");
+            }
+        } catch (Exception e) {
+            log.error("Failed to create file doc vector index", e);
         }
     }
 
     /**
-     * Data class for methods to vectorize
+     * Creates full-text index for Method nodes
+     */
+    private void createMethodFullTextIndex() {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            // Check if index exists
+            String checkQuery = "SHOW INDEXES WHERE name = 'method_names'";
+            List<Record> existing = session.run(checkQuery).list();
+
+            if (existing.isEmpty()) {
+                log.info("Creating full-text index 'method_names'");
+                String createIndexQuery = """
+                    CREATE FULLTEXT INDEX method_names IF NOT EXISTS
+                    FOR (m:Method) ON EACH [m.name, m.signature]
+                    """;
+                session.run(createIndexQuery).consume();
+                log.info("Method full-text index created successfully");
+            } else {
+                log.info("Method full-text index already exists");
+            }
+        } catch (Exception e) {
+            log.error("Failed to create method full-text index", e);
+        }
+    }
+    
+    /**
+     * Creates full-text index for Class nodes
+     */
+    private void createClassFullTextIndex() {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            // Check if index exists
+            String checkQuery = "SHOW INDEXES WHERE name = 'class_names'";
+            List<Record> existing = session.run(checkQuery).list();
+
+            if (existing.isEmpty()) {
+                log.info("Creating full-text index 'class_names'");
+                String createIndexQuery = """
+                    CREATE FULLTEXT INDEX class_names IF NOT EXISTS
+                    FOR (c:Class|Interface|Enum|AnnotationType) ON EACH [c.name, c.fullName]
+                    """;
+                session.run(createIndexQuery).consume();
+                log.info("Class full-text index created successfully");
+            } else {
+                log.info("Class full-text index already exists");
+            }
+        } catch (Exception e) {
+            log.error("Failed to create class full-text index", e);
+        }
+    }
+    
+    /**
+     * Creates full-text index for Description nodes
+     */
+    private void createDescriptionFullTextIndex() {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            // Check if index exists
+            String checkQuery = "SHOW INDEXES WHERE name = 'description_content'";
+            List<Record> existing = session.run(checkQuery).list();
+
+            if (existing.isEmpty()) {
+                log.info("Creating full-text index 'description_content'");
+                String createIndexQuery = """
+                    CREATE FULLTEXT INDEX description_content IF NOT EXISTS
+                    FOR (d:Description) ON EACH [d.content]
+                    """;
+                session.run(createIndexQuery).consume();
+                log.info("Description full-text index created successfully");
+            } else {
+                log.info("Description full-text index already exists");
+            }
+        } catch (Exception e) {
+            log.error("Failed to create description full-text index", e);
+        }
+    }
+    
+    /**
+     * Creates full-text index for FileDoc nodes
+     */
+    private void createFileDocFullTextIndex() {
+        try (Session session = neo4jDriver.session(sessionConfig)) {
+            // Check if index exists
+            String checkQuery = "SHOW INDEXES WHERE name = 'file_doc_content'";
+            List<Record> existing = session.run(checkQuery).list();
+
+            if (existing.isEmpty()) {
+                log.info("Creating full-text index 'file_doc_content'");
+                String createIndexQuery = """
+                    CREATE FULLTEXT INDEX file_doc_content IF NOT EXISTS
+                    FOR (f:FileDoc) ON EACH [f.content, f.fileName]
+                    """;
+                session.run(createIndexQuery).consume();
+                log.info("FileDoc full-text index created successfully");
+            } else {
+                log.info("FileDoc full-text index already exists");
+            }
+        } catch (Exception e) {
+            log.error("Failed to create file doc full-text index", e);
+        }
+    }
+
+    /**
+     * Data class for documents to vectorize
      */
     @Data
     @AllArgsConstructor
-    private static class MethodToVectorize {
+    private static class DocumentToVectorize {
         private String id;
-        private String signature;
-        private String name;
-        private String summary;
-        private String explanation;
-        private List<String> businessTags;
-        private List<String> technicalTags;
-        private String returnType;
-        private String className;
-        private boolean isStatic;
-        private boolean isPublic;
-        private boolean isAbstract;
-        private int parameterCount;
-        private String complexity;
+        private String content;
+        private String metadata1; // type/fileName
+        private String metadata2; // sourceFile/packageName
+        private String nodeType; // "Description" or "FileDoc"
     }
 }

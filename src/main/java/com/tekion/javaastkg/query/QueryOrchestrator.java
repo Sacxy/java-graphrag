@@ -1,7 +1,8 @@
 package com.tekion.javaastkg.query;
 
 import com.tekion.javaastkg.model.QueryModels;
-import com.tekion.javaastkg.query.services.*;
+import com.tekion.javaastkg.query.services.GenerationService;
+import com.tekion.javaastkg.query.HybridRetriever;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -9,67 +10,150 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Main query orchestrator that coordinates the entire query processing pipeline.
- * Replaces LangGraph4j with a Spring-native orchestration approach using
- * individual services and a fluent pipeline builder.
+ * Main query orchestrator that coordinates query processing.
+ * Uses HybridRetriever for structured results and GenerationService for natural language summaries.
  */
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class QueryOrchestrator {
     
-    private final RetrievalService retrievalService;
-    private final DistillationService distillationService;
+    private final HybridRetriever hybridRetriever;
     private final GenerationService generationService;
-    private final VerificationService verificationService;
-    private final RefinementService refinementService;
-    private final FinalizationService finalizationService;
-    
-    @Value("${query.refinement.max-iterations:3}")
-    private int maxRefinementIterations;
     
     /**
      * Main query processing method
      */
     @Async("queryProcessingExecutor")
     public CompletableFuture<QueryModels.QueryResult> processQuery(String query) {
-        String executionId = UUID.randomUUID().toString();
-        log.info("Starting query processing: {} [{}]", query, executionId);
+        log.info("Processing query: {}", query);
         
-        QueryExecutionContext context = QueryExecutionContext.builder()
-                .originalQuery(query)
-                .executionId(executionId)
-                .startTime(LocalDateTime.now())
-                .maxRefinements(maxRefinementIterations)
+        try {
+            // 1. Get structured results from hybrid retriever
+            QueryModels.RetrievalResult retrievalResult = hybridRetriever.retrieve(query);
+            
+            // 2. Generate natural language summary
+            String naturalLanguageSummary = generationService.generateNaturalSummary(query, retrievalResult);
+            
+            // 3. Build combined response with both structured data and natural language
+            QueryModels.QueryResult result = buildQueryResult(query, retrievalResult, naturalLanguageSummary);
+            
+            log.info("Query processing completed successfully for: {}", query);
+            return CompletableFuture.completedFuture(result);
+            
+        } catch (Exception e) {
+            log.error("Query processing failed for: {}", query, e);
+            return CompletableFuture.completedFuture(handleExecutionError(e, query));
+        }
+    }
+    
+    /**
+     * Builds the final query result combining structured retrieval data with natural language summary
+     */
+    private QueryModels.QueryResult buildQueryResult(String query, 
+                                                    QueryModels.RetrievalResult retrievalResult,
+                                                    String naturalLanguageSummary) {
+        
+        // Initialize empty lists for the case when retrievalResult is null or empty
+        List<QueryModels.RelevantComponent> components = new ArrayList<>();
+        List<QueryModels.RelationshipInsight> relationships = new ArrayList<>();
+        
+        if (retrievalResult != null && retrievalResult.getGraphContext() != null) {
+            // Convert retrieved methods to components
+            List<QueryModels.RelevantComponent> methodComponents = retrievalResult.getGraphContext().getMethods().stream()
+                    .map(method -> QueryModels.RelevantComponent.builder()
+                            .type("method")
+                            .signature(method.getSignature())
+                            .name(method.getName())
+                            .summary(method.getClassName() != null ? "Method in " + method.getClassName() : "Method")
+                            .relevanceScore(retrievalResult.getScoreMap().getOrDefault(method.getId(), 0.5))
+                            .businessTags(method.getBusinessTags())
+                            .metadata(method.getMetadata())
+                            .build())
+                    .toList();
+            
+            // Add class components
+            List<QueryModels.RelevantComponent> classComponents = retrievalResult.getGraphContext().getClasses().stream()
+                    .map(clazz -> QueryModels.RelevantComponent.builder()
+                            .type("class")
+                            .signature(clazz.getFullName())
+                            .name(clazz.getName())
+                            .summary(clazz.getType() + (clazz.isInterface() ? " interface" : " class"))
+                            .relevanceScore(retrievalResult.getScoreMap().getOrDefault(clazz.getId(), 0.5))
+                            .metadata(clazz.getMetadata())
+                            .build())
+                    .toList();
+            
+            // Combine all components
+            components.addAll(methodComponents);
+            components.addAll(classComponents);
+            
+            // Convert relationships
+            relationships = retrievalResult.getGraphContext().getRelationships().stream()
+                    .map(rel -> QueryModels.RelationshipInsight.builder()
+                            .description("Relationship: " + rel.getType())
+                            .fromComponent(rel.getFromId())
+                            .toComponent(rel.getToId())
+                            .relationshipType(rel.getType())
+                            .build())
+                    .toList();
+        }
+        
+        return QueryModels.QueryResult.builder()
+                .query(query)
+                .summary(naturalLanguageSummary)
+                .components(components)
+                .relationships(relationships)
+                .confidence(calculateConfidence(retrievalResult))
+                .processingTimeMs(System.currentTimeMillis())
+                .timestamp(LocalDateTime.now())
+                .metadata(Map.of(
+                        "retrievedNodes", components.size(),
+                        "avgRelevanceScore", retrievalResult != null && retrievalResult.getScoreMap() != null ? 
+                            retrievalResult.getScoreMap().values().stream().mapToDouble(Double::doubleValue).average().orElse(0.0) : 0.0,
+                        "methodCount", components.stream().mapToInt(c -> "method".equals(c.getType()) ? 1 : 0).sum(),
+                        "classCount", components.stream().mapToInt(c -> "class".equals(c.getType()) ? 1 : 0).sum()
+                ))
                 .build();
+    }
+    
+    /**
+     * Calculates confidence based on retrieval quality
+     */
+    private double calculateConfidence(QueryModels.RetrievalResult retrievalResult) {
+        if (retrievalResult.getScoreMap().isEmpty()) {
+            return 0.1;
+        }
         
-        return QueryPipeline.create(context)
-                .step("retrieve", retrievalService::retrieve)
-                .step("distill", distillationService::distill)
-                .step("generate", generationService::generate)
-                .step("verify", verificationService::verify)
-                .conditionalStep("refine", 
-                        ctx -> !ctx.isVerified() && ctx.canRefine(), 
-                        refinementService::refine)
-                .step("finalize", finalizationService::finalize)
-                .executeAsync()
-                .exceptionally(this::handleExecutionError);
+        double avgScore = retrievalResult.getScoreMap().values().stream()
+                .mapToDouble(Double::doubleValue)
+                .average().orElse(0.0);
+                
+        int nodeCount = retrievalResult.getGraphContext().getMethods().size() + 
+                       retrievalResult.getGraphContext().getClasses().size();
+        
+        // Base confidence on average score and number of results
+        double confidence = avgScore * 0.7;
+        if (nodeCount > 3) confidence += 0.1;
+        if (nodeCount > 5) confidence += 0.1;
+        
+        return Math.max(0.1, Math.min(1.0, confidence));
     }
     
     /**
      * Handles execution errors gracefully
      */
-    private QueryModels.QueryResult handleExecutionError(Throwable throwable) {
-        log.error("Query processing failed", throwable);
-        
+    private QueryModels.QueryResult handleExecutionError(Throwable throwable, String query) {
         return QueryModels.QueryResult.builder()
-                .summary("An error occurred while processing your query: " + throwable.getMessage())
+                .query(query)
+                .summary("I apologize, but I encountered an error while processing your query: " + throwable.getMessage())
                 .components(List.of())
                 .relationships(List.of())
                 .confidence(0.0)
@@ -77,7 +161,7 @@ public class QueryOrchestrator {
                 .timestamp(LocalDateTime.now())
                 .metadata(Map.of(
                         "error", true,
-                        "errorMessage", throwable.getMessage(),
+                        "errorMessage", throwable.getMessage() != null ? throwable.getMessage() : "Unknown error",
                         "errorType", throwable.getClass().getSimpleName()
                 ))
                 .build();
@@ -91,7 +175,7 @@ public class QueryOrchestrator {
             return processQuery(userQuery).get();
         } catch (Exception e) {
             log.error("Synchronous query processing failed", e);
-            return handleExecutionError(e);
+            return handleExecutionError(e, userQuery);
         }
     }
 }

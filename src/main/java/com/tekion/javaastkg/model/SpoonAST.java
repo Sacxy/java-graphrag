@@ -3,7 +3,9 @@ package com.tekion.javaastkg.model;
 import lombok.Data;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Root model representing the complete AST data from Spoon service.
@@ -15,6 +17,7 @@ public class SpoonAST {
     private List<ClassInfo> classes = new ArrayList<>();
     private List<MethodInfo> methods = new ArrayList<>();
     private List<ApiEndpoint> apiEndpoints = new ArrayList<>();
+    private Map<String, String> docs = new HashMap<>(); // filename -> documentation content
 
     /**
      * Class information extracted from the AST

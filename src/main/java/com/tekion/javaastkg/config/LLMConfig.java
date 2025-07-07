@@ -107,17 +107,17 @@ public class LLMConfig {
     }
 
     /**
-     * Configures the Voyage AI embedding model for code vectorization (indexing)
+     * Configures the Voyage AI embedding model for document vectorization (unstructured text)
      */
     @Bean
     @Qualifier("documentEmbeddingModel")
     public EmbeddingModel documentEmbeddingModel() {
         
-        log.info("Configuring Voyage AI document embedding model: {}", VoyageAiEmbeddingModelName.VOYAGE_CODE_2);
+        log.info("Configuring Voyage AI document embedding model: {}", VoyageAiEmbeddingModelName.VOYAGE_3);
 
         return VoyageAiEmbeddingModel.builder()
                 .apiKey(voyageApiKey)
-                .modelName(VoyageAiEmbeddingModelName.VOYAGE_CODE_2)
+                .modelName(VoyageAiEmbeddingModelName.VOYAGE_3) // Better for unstructured text
                 .inputType("document") // For creating embeddings
                 .timeout(Duration.ofSeconds(60))
                 .maxRetries(3)
@@ -134,12 +134,12 @@ public class LLMConfig {
     @Primary
     public EmbeddingModel queryEmbeddingModel() {
         
-        log.info("Configuring Voyage AI query embedding model: {}", VoyageAiEmbeddingModelName.VOYAGE_CODE_2);
+        log.info("Configuring Voyage AI query embedding model: {}", VoyageAiEmbeddingModelName.VOYAGE_3);
 
         return VoyageAiEmbeddingModel.builder()
                 .apiKey(voyageApiKey)
-                .modelName(VoyageAiEmbeddingModelName.VOYAGE_CODE_2)
-                .inputType("document") // For search queries
+                .modelName(VoyageAiEmbeddingModelName.VOYAGE_3)
+                .inputType("query") // For search queries
                 .timeout(Duration.ofSeconds(60))
                 .maxRetries(3)
                 .logRequests(true)

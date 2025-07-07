@@ -75,7 +75,6 @@ public class QueryModels {
         private String fromComponent;
         private String toComponent;
         private String relationshipType;
-        private boolean verified;
     }
 
     @Data
@@ -86,5 +85,6 @@ public class QueryModels {
         private List<String> topMethodIds;
         private GraphEntities.GraphContext graphContext;
         private Map<String, Double> scoreMap;
+        private Map<String, Object> metadata;
     }
 }

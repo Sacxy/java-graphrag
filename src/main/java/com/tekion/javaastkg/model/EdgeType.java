@@ -25,6 +25,9 @@ public enum EdgeType {
     // Annotation relationships
     ANNOTATED_BY,
     
+    // Description relationships
+    HAS_DESCRIPTION,
+    
     // Type relationships
     DEPENDS_ON,
     PARAMETERIZES,

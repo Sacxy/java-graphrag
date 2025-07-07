@@ -21,8 +21,6 @@ public class GraphEntities {
         private String signature;
         private String name;
         private String className;
-        private String summary;
-        private String detailedExplanation;
         private List<String> businessTags;
         private float[] embedding;
         private Map<String, Object> metadata;
@@ -41,6 +39,31 @@ public class GraphEntities {
         private boolean isInterface;
         private boolean isAbstract;
         private Map<String, Object> metadata;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class DescriptionNode {
+        private String id;
+        private String content;
+        private String type; // "llm_generated", "javadoc", "file_doc"
+        private float[] embedding;
+        private String createdAt;
+        private String sourceFile;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class FileDocNode {
+        private String id;
+        private String fileName;
+        private String content;
+        private float[] embedding;
+        private String packageName;
     }
 
     @Data

@@ -2,8 +2,6 @@ package com.tekion.javaastkg.query.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tekion.javaastkg.model.QueryModels;
-import com.tekion.javaastkg.query.ContextDistiller;
-import com.tekion.javaastkg.query.QueryExecutionContext;
 import com.tekion.javaastkg.util.LLMRateLimiter;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import lombok.RequiredArgsConstructor;
@@ -18,8 +16,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Service responsible for the generation step in the query processing pipeline.
- * Uses LLM to generate structured answers based on distilled context.
+ * Service responsible for generating natural language summaries of retrieval results.
+ * Takes structured retrieval results and creates human-readable explanations.
  */
 @Service
 @Slf4j
@@ -31,208 +29,96 @@ public class GenerationService {
     private final LLMRateLimiter rateLimiter;
     
     /**
-     * Executes the generation step
+     * Generates natural language summary from retrieval results
      */
-    @Async("llmExecutor")
-    public CompletableFuture<QueryExecutionContext> generate(QueryExecutionContext context) {
-        log.debug("Executing generation [{}]", context.getExecutionId());
+    public String generateNaturalSummary(String query, QueryModels.RetrievalResult retrievalResult) {
+        log.debug("Generating natural language summary for query: {}", query);
         
         try {
-            if (context.getDistilledContext() == null || context.getDistilledContext().isEmpty()) {
-                log.warn("No distilled context available for generation [{}]", context.getExecutionId());
-                
-                // Create a basic result indicating no context
-                QueryModels.QueryResult basicResult = QueryModels.QueryResult.builder()
-                        .query(context.getOriginalQuery())
-                        .summary("No relevant context found for the query.")
-                        .components(new ArrayList<>())
-                        .relationships(new ArrayList<>())
-                        .confidence(0.0)
-                        .metadata(Map.of("noContext", true))
-                        .build();
-                
-                context.setGeneratedResult(basicResult);
-                return CompletableFuture.completedFuture(context);
+            if (retrievalResult == null || retrievalResult.getGraphContext() == null) {
+                log.warn("No retrieval result available for generation");
+                return "No relevant information found for the query.";
             }
             
-            String prompt = buildGenerationPrompt(context);
-            String response = rateLimiter.executeWithRateLimit(
+            String prompt = buildNaturalLanguagePrompt(query, retrievalResult);
+            String summary = rateLimiter.executeWithRateLimit(
                 () -> llm.generate(prompt), 
-                "LLM Generation for query: " + context.getOriginalQuery()
+                "Natural language generation for query: " + query
             );
             
-            QueryModels.QueryResult result = parseGeneratedResponse(response, context);
-            context.setGeneratedResult(result);
-            
-            // Add generation metadata
-            context.getMetadata().put("generationAttempt", context.getRefinementCount() + 1);
-            context.getMetadata().put("promptLength", prompt.length());
-            context.getMetadata().put("responseLength", response.length());
-            
-            // Log detailed information about generated result
-            log.info("Generation completed - Summary: '{}' [{}]", 
-                    result.getSummary(), context.getExecutionId());
-            log.info("Generated {} components and {} relationships [{}]", 
-                    result.getComponents().size(), 
-                    result.getRelationships().size(),
-                    context.getExecutionId());
-            
-            // Log top 3 components for visibility
-            result.getComponents().stream()
-                    .limit(3)
-                    .forEach(comp -> log.info("Generated component: {} - {}", 
-                            comp.getType(), comp.getName()));
-            
-            return CompletableFuture.completedFuture(context);
+            log.info("Generated natural language summary for query: {}", query);
+            log.info("Generated Answer: {}", summary.trim());
+            return summary.trim();
         } catch (Exception e) {
-            log.error("Generation failed [{}]", context.getExecutionId(), e);
-            context.getMetadata().put("generationError", e.getMessage());
-            return CompletableFuture.failedFuture(new RuntimeException("Generation step failed", e));
+            log.error("Natural language generation failed for query: {}", query, e);
+            return "Unable to generate summary due to technical error: " + e.getMessage();
         }
     }
     
     /**
-     * Builds the generation prompt with all context
+     * Builds the natural language generation prompt
      */
-    private String buildGenerationPrompt(QueryExecutionContext context) {
+    private String buildNaturalLanguagePrompt(String query, QueryModels.RetrievalResult retrievalResult) {
         StringBuilder prompt = new StringBuilder();
         
-        prompt.append("You are an expert software architect analyzing a Java codebase.\n\n");
-        prompt.append("User Query: ").append(context.getOriginalQuery()).append("\n\n");
-        prompt.append("Relevant Context from the Codebase:\n\n");
+        prompt.append("You are an expert software architect analyzing a Java codebase. Answer the user's query in natural language based on the code context provided.\n\n");
+        prompt.append("User Query: ").append(query).append("\n\n");
         
-        // Include distilled context
-        for (ContextDistiller.RelevantContext ctx : context.getDistilledContext()) {
-            prompt.append(String.format("=== %s: %s ===\n",
-                    ctx.getCandidate().getType().toUpperCase(),
-                    ctx.getCandidate().getName()));
-            prompt.append("Summary: ").append(ctx.getCandidate().getSummary()).append("\n");
-            if (ctx.getCandidate().getDetails() != null) {
-                prompt.append("Details: ").append(ctx.getCandidate().getDetails()).append("\n");
-            }
-            prompt.append("Relevance: ").append(ctx.getRelevanceReason()).append("\n\n");
-        }
-        
-        // Add refinement context if this is a refinement
-        if (context.getRefinementCount() > 0) {
-            prompt.append("\n=== REFINEMENT CONTEXT ===\n");
-            prompt.append("This is refinement attempt #").append(context.getRefinementCount()).append("\n");
-            if (!context.getVerificationErrors().isEmpty()) {
-                prompt.append("Previous errors to fix:\n");
-                for (String error : context.getVerificationErrors()) {
-                    prompt.append("- ").append(error).append("\n");
+        // Check if we have any results
+        if (retrievalResult.getGraphContext() == null || 
+            (retrievalResult.getGraphContext().getMethods().isEmpty() && 
+             retrievalResult.getGraphContext().getClasses().isEmpty())) {
+            prompt.append("No relevant code components were found for this query.\n\n");
+            prompt.append("Please provide a helpful response explaining that no specific code was found related to '" + query + "' and suggest what the user might be looking for or how they could refine their query to be more specific about the codebase components they want to understand.\n\n");
+        } else {
+            prompt.append("Retrieved Context from the Codebase:\n\n");
+            
+            // Add methods with scores
+            for (var method : retrievalResult.getGraphContext().getMethods()) {
+                prompt.append(String.format("=== METHOD: %s ===\n", method.getName()));
+                prompt.append("Signature: ").append(method.getSignature()).append("\n");
+                if (method.getClassName() != null) {
+                    prompt.append("Class: ").append(method.getClassName()).append("\n");
                 }
+                if (method.getBusinessTags() != null && !method.getBusinessTags().isEmpty()) {
+                    prompt.append("Tags: ").append(String.join(", ", method.getBusinessTags())).append("\n");
+                }
+                // Add relevance score if available
+                if (retrievalResult.getScoreMap() != null && retrievalResult.getScoreMap().containsKey(method.getId())) {
+                    prompt.append("Relevance Score: ").append(String.format("%.2f", retrievalResult.getScoreMap().get(method.getId()))).append("\n");
+                }
+                prompt.append("\n");
             }
-            prompt.append("Please provide a corrected answer.\n\n");
+            
+            // Add classes
+            for (var clazz : retrievalResult.getGraphContext().getClasses()) {
+                prompt.append(String.format("=== CLASS: %s ===\n", clazz.getName()));
+                prompt.append("Full Name: ").append(clazz.getFullName()).append("\n");
+                if (clazz.getPackageName() != null) {
+                    prompt.append("Package: ").append(clazz.getPackageName()).append("\n");
+                }
+                prompt.append("Type: ").append(clazz.getType()).append("\n");
+                prompt.append("Interface: ").append(clazz.isInterface()).append("\n");
+                prompt.append("Abstract: ").append(clazz.isAbstract()).append("\n\n");
+            }
         }
         
         prompt.append("""
-            Based on the context above, provide a comprehensive answer to the user's query.
+            Based on the context above, provide a clear, conversational answer to the user's query in natural language.
             
-            Your response must be a valid JSON object with this structure:
-            {
-                "summary": "A clear, concise answer to the query",
-                "components": [
-                    {
-                        "type": "method|class",
-                        "signature": "full signature or class name",
-                        "name": "simple name",
-                        "summary": "what this component does",
-                        "relevanceScore": 0.0-1.0
-                    }
-                ],
-                "relationships": [
-                    {
-                        "description": "explanation of the relationship",
-                        "fromComponent": "component name",
-                        "toComponent": "component name",
-                        "relationshipType": "CALLS|IMPLEMENTS|EXTENDS|USES"
-                    }
-                ],
-                "metadata": {
-                    "keyInsights": ["insight1", "insight2"],
-                    "suggestedNextSteps": ["step1", "step2"]
-                }
-            }
+            Guidelines:
+            - Answer directly in natural language, not JSON
+            - Be specific about what was found in the codebase
+            - If no relevant code was found, explain this clearly and suggest how the user could refine their query
+            - Include specific class names, method names, and relationships when relevant
+            - Provide insights about how the code works and what it does
+            - If the query asks about something not found, suggest what might be available instead
+            - Keep the response conversational and helpful
             
-            Focus on accuracy and ensure all mentioned relationships actually exist in the code.
+            Do not return JSON. Return only natural language text.
             """);
         
         return prompt.toString();
     }
     
-    /**
-     * Parses the LLM-generated response into a QueryResult
-     */
-    private QueryModels.QueryResult parseGeneratedResponse(String response, QueryExecutionContext context) {
-        try {
-            // Clean response
-            response = response.trim();
-            if (response.startsWith("```json")) {
-                response = response.substring(7);
-            }
-            if (response.endsWith("```")) {
-                response = response.substring(0, response.length() - 3);
-            }
-            
-            // Parse JSON
-            Map<String, Object> parsed = objectMapper.readValue(response, Map.class);
-            
-            // Build result
-            QueryModels.QueryResult.QueryResultBuilder builder = QueryModels.QueryResult.builder()
-                    .query(context.getOriginalQuery())
-                    .summary((String) parsed.get("summary"));
-            
-            // Parse components
-            List<QueryModels.RelevantComponent> components = new ArrayList<>();
-            if (parsed.containsKey("components")) {
-                List<Map<String, Object>> componentList = (List<Map<String, Object>>) parsed.get("components");
-                for (Map<String, Object> comp : componentList) {
-                    components.add(QueryModels.RelevantComponent.builder()
-                            .type((String) comp.get("type"))
-                            .signature((String) comp.get("signature"))
-                            .name((String) comp.get("name"))
-                            .summary((String) comp.get("summary"))
-                            .relevanceScore(((Number) comp.getOrDefault("relevanceScore", 0.8)).doubleValue())
-                            .build());
-                }
-            }
-            builder.components(components);
-            
-            // Parse relationships
-            List<QueryModels.RelationshipInsight> relationships = new ArrayList<>();
-            if (parsed.containsKey("relationships")) {
-                List<Map<String, Object>> relList = (List<Map<String, Object>>) parsed.get("relationships");
-                for (Map<String, Object> rel : relList) {
-                    relationships.add(QueryModels.RelationshipInsight.builder()
-                            .description((String) rel.get("description"))
-                            .fromComponent((String) rel.get("fromComponent"))
-                            .toComponent((String) rel.get("toComponent"))
-                            .relationshipType((String) rel.get("relationshipType"))
-                            .verified(false)
-                            .build());
-                }
-            }
-            builder.relationships(relationships);
-            
-            // Parse metadata
-            Map<String, Object> metadata = (Map<String, Object>) parsed.getOrDefault("metadata", new HashMap<>());
-            builder.metadata(metadata);
-            
-            return builder.build();
-            
-        } catch (Exception e) {
-            log.error("Failed to parse LLM response [{}]", context.getExecutionId(), e);
-            
-            // Return a basic result on parse error
-            return QueryModels.QueryResult.builder()
-                    .query(context.getOriginalQuery())
-                    .summary("Failed to parse response: " + e.getMessage())
-                    .components(new ArrayList<>())
-                    .relationships(new ArrayList<>())
-                    .metadata(Map.of("parseError", true))
-                    .confidence(0.0)
-                    .build();
-        }
-    }
 }

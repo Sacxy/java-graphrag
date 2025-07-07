@@ -75,6 +75,12 @@ public class GraphBuilder {
             // Step 2: Create relationships
             createEdges(session, analysisResult.getEdges());
 
+            // Step 3: Process documentation if available
+            if (analysisResult.getDocs() != null && !analysisResult.getDocs().isEmpty()) {
+                log.info("Processing {} documentation files", analysisResult.getDocs().size());
+                processDocumentation(session, analysisResult.getDocs());
+            }
+
             long duration = System.currentTimeMillis() - startTime;
             log.info("Graph construction completed in {} ms", duration);
 
@@ -119,8 +125,6 @@ public class GraphBuilder {
         // Drop any other potentially conflicting constraints
         try {
             session.run("DROP CONSTRAINT class_unique IF EXISTS").consume();
-            session.run("DROP CONSTRAINT field_unique IF EXISTS").consume();
-            session.run("DROP CONSTRAINT package_unique IF EXISTS").consume();
             log.info("Dropped other old uniqueness constraints");
         } catch (Exception e) {
             log.debug("No other old constraints to drop");
@@ -131,8 +135,8 @@ public class GraphBuilder {
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (m:Method) REQUIRE m.id IS UNIQUE").consume();
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (c:Class) REQUIRE c.id IS UNIQUE").consume();
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (i:Interface) REQUIRE i.id IS UNIQUE").consume();
-        session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (f:Field) REQUIRE f.id IS UNIQUE").consume();
-        session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Package) REQUIRE p.id IS UNIQUE").consume();
+        session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (d:Description) REQUIRE d.id IS UNIQUE").consume();
+        session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (fd:FileDoc) REQUIRE fd.id IS UNIQUE").consume();
 
         // Indexes for common query patterns
         session.run("CREATE INDEX IF NOT EXISTS FOR (n:GraphNode) ON (n.type)").consume();
@@ -143,8 +147,12 @@ public class GraphBuilder {
         session.run("CREATE INDEX IF NOT EXISTS FOR (c:Class) ON (c.name)").consume();
         session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.name)").consume();
         session.run("CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.signature)").consume();
-        session.run("CREATE INDEX IF NOT EXISTS FOR (f:Field) ON (f.name)").consume();
-        session.run("CREATE INDEX IF NOT EXISTS FOR (p:Package) ON (p.name)").consume();
+        
+        // Indexes for new node types
+        session.run("CREATE INDEX IF NOT EXISTS FOR (d:Description) ON (d.type)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (d:Description) ON (d.sourceFile)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (fd:FileDoc) ON (fd.fileName)").consume();
+        session.run("CREATE INDEX IF NOT EXISTS FOR (fd:FileDoc) ON (fd.packageName)").consume();
     }
 
     /**
@@ -184,9 +192,6 @@ public class GraphBuilder {
         
         // Use switch-case to get the appropriate query for each node type
         switch (nodeType) {
-            case PACKAGE:
-                query = queryLoader.getNodeQuery("package");
-                break;
             case CLASS:
                 query = queryLoader.getNodeQuery("class");
                 break;
@@ -225,24 +230,6 @@ public class GraphBuilder {
                 break;
             case METHOD:
                 query = queryLoader.getNodeQuery("method");
-                break;
-            case FIELD:
-                query = queryLoader.getNodeQuery("field");
-                break;
-            case PARAMETER:
-                query = """
-                    UNWIND $nodes AS node
-                    MERGE (n:Parameter {id: node.id})
-                    SET n += {
-                        type: node.type,
-                        label: node.label,
-                        sourceFile: node.sourceFile,
-                        lineNumber: node.lineNumber,
-                        columnNumber: node.columnNumber,
-                        createdAt: datetime()
-                    }
-                    SET n += node.properties
-                    """;
                 break;
             case ANNOTATION:
                 query = """
@@ -721,5 +708,88 @@ public class GraphBuilder {
         }
         
         return map;
+    }
+
+    /**
+     * Processes documentation from Spoon API and creates FileDoc nodes
+     */
+    private void processDocumentation(Session session, Map<String, String> docs) {
+        log.info("Creating FileDoc nodes for {} documentation files", docs.size());
+        
+        // Create FileDoc nodes in batches
+        final int batchSize = 50;
+        int count = 0;
+        
+        for (Map.Entry<String, String> entry : docs.entrySet()) {
+            String fileName = entry.getKey();
+            String content = entry.getValue();
+            
+            if (content == null || content.trim().isEmpty()) {
+                continue;
+            }
+            
+            // Extract package name from file path
+            String packageName = extractPackageFromFileName(fileName);
+            
+            String query = """
+                CREATE (f:FileDoc {
+                    id: $fileId,
+                    fileName: $fileName,
+                    content: $content,
+                    packageName: $packageName,
+                    createdAt: datetime()
+                })
+                """;
+            
+            try {
+                session.run(query, Map.of(
+                    "fileId", "file_" + fileName.replace("/", "_").replace(".", "_"),
+                    "fileName", fileName,
+                    "content", content,
+                    "packageName", packageName
+                )).consume();
+                
+                count++;
+                
+                if (count % batchSize == 0) {
+                    log.debug("Created {} FileDoc nodes", count);
+                }
+                
+            } catch (Exception e) {
+                log.error("Failed to create FileDoc node for file: {}", fileName, e);
+            }
+        }
+        
+        log.info("Successfully created {} FileDoc nodes", count);
+    }
+    
+    /**
+     * Extracts package name from file path
+     */
+    private String extractPackageFromFileName(String fileName) {
+        if (fileName == null || !fileName.contains("/")) {
+            return "default";
+        }
+        
+        // Remove file extension and convert path to package name
+        String pathWithoutExtension = fileName.replaceAll("\\.[^.]+$", "");
+        
+        // Find the java source path (src/main/java or similar)
+        String[] parts = pathWithoutExtension.split("/");
+        StringBuilder packageName = new StringBuilder();
+        
+        boolean foundJava = false;
+        for (String part : parts) {
+            if (foundJava && !part.isEmpty()) {
+                if (packageName.length() > 0) {
+                    packageName.append(".");
+                }
+                packageName.append(part);
+            } else if ("java".equals(part)) {
+                foundJava = true;
+            }
+        }
+        
+        return packageName.length() > 0 ? packageName.toString() : "default";
     }
 }

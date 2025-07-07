@@ -156,13 +156,13 @@ public class IngestionScheduler {
             log.info("Step 2/4: Building knowledge graph in Neo4j...");
             graphBuilder.buildGraph(analysisResult);
 
-            // Step 4: Enrich with semantic information
-            log.info("Step 3/4: Enriching methods with semantic information...");
-            enricher.enrichMethods();
+            // Step 4: Create description nodes with semantic information
+            log.info("Step 3/4: Creating description nodes with semantic information...");
+            enricher.createDescriptionNodes();
 
-            // Step 5: Generate vector embeddings
-            log.info("Step 4/4: Generating vector embeddings...");
-            vectorizer.vectorizeEnrichedMethods();
+            // Step 5: Generate vector embeddings for documents
+            log.info("Step 4/4: Generating vector embeddings for descriptions and file docs...");
+            vectorizer.vectorizeDocuments();
 
             // Pipeline completed successfully
             LocalDateTime endTime = LocalDateTime.now();

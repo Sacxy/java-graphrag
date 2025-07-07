@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -22,4 +23,5 @@ public class AnalysisResult {
     private String currentPhase;
     private String errorMessage;
     private String errorStackTrace;
+    private Map<String, String> docs; // filename -> documentation content
 }

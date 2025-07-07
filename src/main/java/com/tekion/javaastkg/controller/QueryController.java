@@ -51,7 +51,7 @@ public class QueryController {
                     .confidence(0.0)
                     .metadata(Map.of(
                             "error", true,
-                            "errorMessage", e.getMessage()
+                            "errorMessage", e.getMessage() != null ? e.getMessage() : "Unknown error"
                     ))
                     .build();
 

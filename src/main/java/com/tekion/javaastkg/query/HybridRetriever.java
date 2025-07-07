@@ -2,20 +2,28 @@ package com.tekion.javaastkg.query;
 
 import com.tekion.javaastkg.model.GraphEntities;
 import com.tekion.javaastkg.model.QueryModels;
+import com.tekion.javaastkg.query.services.EntityExtractor;
+import com.tekion.javaastkg.query.services.ParallelSearchService;
+import com.tekion.javaastkg.query.services.SearchResultCombiner;
+import com.tekion.javaastkg.query.services.GraphExpander;
+import com.tekion.javaastkg.query.services.NodeScorer;
+import com.tekion.javaastkg.query.services.ReRankingService;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import lombok.extern.slf4j.Slf4j;
 import org.neo4j.driver.*;
 import org.neo4j.driver.Record;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 import java.util.Arrays;
 
 /**
- * Implements hybrid retrieval combining vector similarity search and graph traversal.
- * This provides both semantic similarity and structural context.
+ * Implements hybrid retrieval combining parallel full-text and vector similarity search with graph traversal.
+ * This provides both semantic similarity, exact matching, and structural context.
  */
 @Service
 @Slf4j
@@ -24,9 +32,18 @@ public class HybridRetriever {
     private final Driver neo4jDriver;
     private final SessionConfig sessionConfig;
     private final EmbeddingModel embeddingModel;
+    private final EntityExtractor entityExtractor;
+    private final ParallelSearchService parallelSearchService;
+    private final SearchResultCombiner searchResultCombiner;
+    private final GraphExpander graphExpander;
+    private final NodeScorer nodeScorer;
+    private final ReRankingService reRankingService;
 
-    @org.springframework.beans.factory.annotation.Value("${query.retrieval.vector-search-limit:10}")
-    private int vectorSearchLimit;
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.score-threshold:0.1}")
+    private double scoreThreshold;
+
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.initial-limit:100}")
+    private int initialLimit;
 
     @org.springframework.beans.factory.annotation.Value("${query.retrieval.graph-expansion-depth:3}")
     private int graphExpansionDepth;
@@ -34,37 +51,115 @@ public class HybridRetriever {
     @Autowired
     public HybridRetriever(Driver neo4jDriver,
                            SessionConfig sessionConfig,
-                           @org.springframework.beans.factory.annotation.Qualifier("queryEmbeddingModel") EmbeddingModel embeddingModel) {
+                           @Qualifier("queryEmbeddingModel") EmbeddingModel embeddingModel,
+                           EntityExtractor entityExtractor,
+                           ParallelSearchService parallelSearchService,
+                           SearchResultCombiner searchResultCombiner,
+                           GraphExpander graphExpander,
+                           NodeScorer nodeScorer,
+                           ReRankingService reRankingService) {
         this.neo4jDriver = neo4jDriver;
         this.sessionConfig = sessionConfig;
         this.embeddingModel = embeddingModel;
+        this.entityExtractor = entityExtractor;
+        this.parallelSearchService = parallelSearchService;
+        this.searchResultCombiner = searchResultCombiner;
+        this.graphExpander = graphExpander;
+        this.nodeScorer = nodeScorer;
+        this.reRankingService = reRankingService;
     }
 
     /**
-     * Performs hybrid retrieval for a user query
+     * Performs hybrid retrieval for a user query using parallel full-text and vector search
      */
     public QueryModels.RetrievalResult retrieve(String query) {
         log.info("Performing hybrid retrieval for query: {}", query);
 
         try {
-            // Step 1: Embed the query
+            // Step 1: Extract entities from query
+            EntityExtractor.ExtractedEntities entities = entityExtractor.extract(query);
+            log.debug("Extracted entities: classes={}, methods={}, packages={}, terms={}", 
+                     entities.getClasses().size(), entities.getMethods().size(), 
+                     entities.getPackages().size(), entities.getTerms().size());
+
+            // Step 2: Generate query embedding
             float[] queryVector = embeddingModel.embed(query).content().vector();
-            log.info("Generated query vector: first 5 values = {}", Arrays.toString(Arrays.copyOf(queryVector, 5)));
-            log.info("Query vector length: {}", queryVector.length);
+            log.debug("Generated query vector with length: {}", queryVector.length);
 
-            // Step 2: Vector similarity search
-            Map<String, Double> vectorSearchResults = performVectorSearch(queryVector);
-            List<String> topMethodIds = new ArrayList<>(vectorSearchResults.keySet());
-            log.info("Vector search found {} methods", topMethodIds.size());
+            // Step 3: Parallel search execution
+            CompletableFuture<List<ParallelSearchService.SearchResult>> fullTextFuture = 
+                parallelSearchService.fullTextSearch(entities);
+            
+            CompletableFuture<List<ParallelSearchService.SearchResult>> vectorFuture = 
+                parallelSearchService.vectorSearch(queryVector);
 
-            // Step 3: Graph expansion from top results
-            GraphEntities.GraphContext graphContext = performGraphExpansion(topMethodIds);
+            // Step 4: Wait for both searches to complete
+            List<ParallelSearchService.SearchResult> fullTextResults = fullTextFuture.join();
+            List<ParallelSearchService.SearchResult> vectorResults = vectorFuture.join();
+            
+            log.info("Search completed: {} full-text results, {} vector results", 
+                    fullTextResults.size(), vectorResults.size());
 
-            // Step 4: Combine and rank results
+            // Step 5: Combine and rank results
+            List<SearchResultCombiner.RankedResult> combinedResults = 
+                searchResultCombiner.combine(fullTextResults, vectorResults);
+            
+            log.info("Combined and ranked {} unique results", combinedResults.size());
+
+            // Step 6: Extract top node IDs for graph expansion
+            List<String> topNodeIds = combinedResults.stream()
+                    .filter(result -> result.getCombinedScore() >= scoreThreshold)
+                    .limit(initialLimit)
+                    .map(SearchResultCombiner.RankedResult::getNodeId)
+                    .collect(Collectors.toList());
+
+            // Step 7: Expand graph using configurable n-hop traversal
+            GraphExpander.SubGraph expandedGraph = graphExpander.expandNHop(topNodeIds, graphExpansionDepth, initialLimit);
+            log.debug("Graph expansion completed: {} nodes, {} relationships", 
+                     expandedGraph.getNodeCount(), expandedGraph.getRelationshipCount());
+
+            // Step 8: Score nodes based on multiple criteria
+            Map<String, Double> fullTextScores = combinedResults.stream()
+                    .collect(Collectors.toMap(
+                            SearchResultCombiner.RankedResult::getNodeId,
+                            SearchResultCombiner.RankedResult::getFullTextScore,
+                            (existing, replacement) -> existing
+                    ));
+            
+            Map<String, Double> vectorScores = combinedResults.stream()
+                    .collect(Collectors.toMap(
+                            SearchResultCombiner.RankedResult::getNodeId,
+                            SearchResultCombiner.RankedResult::getVectorScore,
+                            (existing, replacement) -> existing
+                    ));
+
+            Map<String, Double> nodeScores = nodeScorer.calculateNodeScores(
+                    expandedGraph, fullTextScores, vectorScores, topNodeIds);
+            
+            // Step 9: Apply re-ranking based on embedding similarity
+            GraphExpander.SubGraph reRankedGraph = reRankingService.applyReRanking(expandedGraph, query);
+            log.debug("Re-ranking completed: {} nodes remaining", reRankedGraph.getNodeCount());
+
+            // Step 10: Convert to compatible GraphContext format
+            GraphEntities.GraphContext graphContext = convertToGraphContext(reRankedGraph);
+
+            // Step 11: Build final score map combining all scoring methods
+            Map<String, Double> finalScoreMap = buildFinalScoreMap(combinedResults, nodeScores, reRankedGraph);
+
             return QueryModels.RetrievalResult.builder()
-                    .topMethodIds(topMethodIds)
+                    .topMethodIds(topNodeIds)
                     .graphContext(graphContext)
-                    .scoreMap(vectorSearchResults)
+                    .scoreMap(finalScoreMap)
+                    .metadata(Map.of(
+                            "fullTextResultCount", fullTextResults.size(),
+                            "vectorResultCount", vectorResults.size(),
+                            "combinedResultCount", combinedResults.size(),
+                            "expandedNodeCount", expandedGraph.getNodeCount(),
+                            "reRankedNodeCount", reRankedGraph.getNodeCount(),
+                            "scoreThreshold", scoreThreshold,
+                            "expansionDepth", graphExpansionDepth,
+                            "queryProcessingTime", System.currentTimeMillis()
+                    ))
                     .build();
 
         } catch (Exception e) {
@@ -73,72 +168,128 @@ public class HybridRetriever {
         }
     }
 
+
     /**
-     * Performs vector similarity search using Neo4j's vector index
+     * Converts SubGraph to GraphContext for compatibility with existing APIs
      */
-    private Map<String, Double> performVectorSearch(float[] queryVector) {
-        try (Session session = neo4jDriver.session(sessionConfig)) {
-            // First check if we have any methods with embeddings
-            String checkQuery = "MATCH (m:Method) WHERE m.embedding IS NOT NULL RETURN count(m) as count";
-            Long embeddingCount = session.run(checkQuery).single().get("count").asLong();
-            log.info("Total methods with embeddings: {}", embeddingCount);
-            
-            if (embeddingCount == 0) {
-                log.warn("No methods have embeddings! Run the vectorization process first.");
-                return new LinkedHashMap<>();
+    private GraphEntities.GraphContext convertToGraphContext(GraphExpander.SubGraph subGraph) {
+        List<GraphEntities.MethodNode> methods = new ArrayList<>();
+        List<GraphEntities.ClassNode> classes = new ArrayList<>();
+        List<GraphEntities.Relationship> relationships = new ArrayList<>();
+
+        // Convert nodes
+        for (GraphExpander.GraphNode node : subGraph.getNodesList()) {
+            if ("Method".equals(node.getType())) {
+                methods.add(convertToMethodNode(node));
+            } else if ("Class".equals(node.getType())) {
+                classes.add(convertToClassNode(node));
             }
-            
-            // Check if vector index exists
-            String indexCheckQuery = "SHOW INDEXES WHERE name = 'method_embeddings'";
-            List<Record> indexes = session.run(indexCheckQuery).list();
-            log.info("Vector index 'method_embeddings' exists: {}", !indexes.isEmpty());
-            // Try without the class join first to see if that's the issue
-            String query = """
-                CALL db.index.vector.queryNodes('method_embeddings', 50, $queryVector)
-                YIELD node, score
-                RETURN id(node) as nodeId, 
-                       node.signature as signature,
-                       node.name as name,
-                       node.summary as summary,
-                       node.className as className,
-                       score
-                ORDER BY score DESC
-                """;
-
-            Map<String, Double> results = new LinkedHashMap<>();
-
-            Map<String, Object> params = Map.of(
-                    "limit", vectorSearchLimit,
-                    "queryVector", queryVector
-            );
-            log.info("Executing vector search with limit={}, vector length={}", vectorSearchLimit, queryVector.length);
-            
-            List<Record> records;
-            try {
-                records = session.run(query, params).list();
-                log.info("Vector search query returned {} records", records.size());
-            } catch (Exception e) {
-                log.error("Vector search query failed", e);
-                return new LinkedHashMap<>();
-            }
-
-            for (Record record : records) {
-                String nodeId = String.valueOf(record.get("nodeId").asLong());
-                double score = record.get("score").asDouble();
-                results.put(nodeId, score);
-
-                log.debug("Vector search result: {} - {} (score: {})",
-                        record.get("name").asString(),
-                        record.get("className").asString(),
-                        score);
-            }
-
-            return results;
         }
+
+        // Convert relationships
+        for (GraphExpander.GraphRelationship rel : subGraph.getRelationships()) {
+            relationships.add(convertToRelationship(rel));
+        }
+
+        return GraphEntities.GraphContext.builder()
+                .methods(methods)
+                .classes(classes)
+                .relationships(relationships)
+                .metadata(subGraph.getMetadata())
+                .build();
     }
 
     /**
-     * Expands the graph context around the top vector search results
+     * Converts GraphNode to MethodNode
+     */
+    private GraphEntities.MethodNode convertToMethodNode(GraphExpander.GraphNode node) {
+        Map<String, Object> props = node.getProperties();
+        return GraphEntities.MethodNode.builder()
+                .id(node.getId())
+                .signature((String) props.get("signature"))
+                .name((String) props.get("name"))
+                .className((String) props.get("className"))
+                .businessTags(extractStringList(props, "businessTags"))
+                .metadata(props)
+                .build();
+    }
+
+    /**
+     * Converts GraphNode to ClassNode
+     */
+    private GraphEntities.ClassNode convertToClassNode(GraphExpander.GraphNode node) {
+        Map<String, Object> props = node.getProperties();
+        return GraphEntities.ClassNode.builder()
+                .id(node.getId())
+                .fullName((String) props.get("fullName"))
+                .name((String) props.get("name"))
+                .packageName((String) props.get("package"))
+                .type((String) props.get("type"))
+                .isInterface((Boolean) props.getOrDefault("isInterface", false))
+                .isAbstract((Boolean) props.getOrDefault("isAbstract", false))
+                .metadata(props)
+                .build();
+    }
+
+    /**
+     * Converts GraphRelationship to Relationship
+     */
+    private GraphEntities.Relationship convertToRelationship(GraphExpander.GraphRelationship rel) {
+        return GraphEntities.Relationship.builder()
+                .fromId(rel.getStartNodeId())
+                .toId(rel.getEndNodeId())
+                .type(rel.getType())
+                .properties(rel.getProperties())
+                .build();
+    }
+
+    /**
+     * Builds final score map combining all scoring methods
+     */
+    private Map<String, Double> buildFinalScoreMap(List<SearchResultCombiner.RankedResult> combinedResults,
+                                                  Map<String, Double> nodeScores,
+                                                  GraphExpander.SubGraph reRankedGraph) {
+        Map<String, Double> finalScores = new LinkedHashMap<>();
+        
+        // Start with nodes that exist in the re-ranked graph
+        Set<String> acceptedNodeIds = reRankedGraph.getNodes().keySet();
+        
+        for (SearchResultCombiner.RankedResult result : combinedResults) {
+            if (acceptedNodeIds.contains(result.getNodeId())) {
+                double baseScore = result.getCombinedScore();
+                double nodeScore = nodeScores.getOrDefault(result.getNodeId(), 0.0);
+                
+                // Combine scores with weights
+                double finalScore = (baseScore * 0.6) + (nodeScore * 0.4);
+                finalScores.put(result.getNodeId(), finalScore);
+            }
+        }
+        
+        // Add any additional nodes that were discovered during expansion
+        for (String nodeId : acceptedNodeIds) {
+            if (!finalScores.containsKey(nodeId)) {
+                double nodeScore = nodeScores.getOrDefault(nodeId, 0.0);
+                finalScores.put(nodeId, nodeScore * 0.3); // Lower weight for expansion-only nodes
+            }
+        }
+        
+        return finalScores;
+    }
+
+    /**
+     * Extracts string list from properties map
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> extractStringList(Map<String, Object> props, String key) {
+        Object value = props.get(key);
+        if (value instanceof List) {
+            return (List<String>) value;
+        }
+        return new ArrayList<>();
+    }
+
+    /**
+     * Expands the graph context around the top search results (legacy method for compatibility)
      */
     private GraphEntities.GraphContext performGraphExpansion(List<String> nodeIds) {
         if (nodeIds.isEmpty()) {
@@ -150,19 +301,30 @@ public class HybridRetriever {
         }
 
         try (Session session = neo4jDriver.session(sessionConfig)) {
-            // Convert string IDs to long for Neo4j
-            List<Long> longIds = nodeIds.stream()
-                    .map(Long::parseLong)
+            // Handle mixed node types (string and numeric IDs)
+            List<String> validNodeIds = nodeIds.stream()
+                    .filter(Objects::nonNull)
                     .collect(Collectors.toList());
 
+            if (validNodeIds.isEmpty()) {
+                return GraphEntities.GraphContext.builder()
+                        .methods(new ArrayList<>())
+                        .classes(new ArrayList<>())
+                        .relationships(new ArrayList<>())
+                        .build();
+            }
+
             // Expand graph to include related methods and classes
+            // Handle both numeric IDs and string IDs from different node types
             String expansionQuery = String.format("""
-                MATCH (startNode:Method)
-                WHERE id(startNode) IN $nodeIds
+                // Start from nodes that are either Method or Class
+                MATCH (startNode)
+                WHERE (startNode:Method OR startNode:Class OR startNode:Interface) 
+                  AND (toString(id(startNode)) IN $nodeIds OR startNode.id IN $nodeIds)
                 CALL {
                     WITH startNode
                     MATCH path = (startNode)-[*0..%d]-(connected)
-                    WHERE connected:Method OR connected:Class
+                    WHERE connected:Method OR connected:Class OR connected:Interface
                     RETURN connected, relationships(path) as rels
                 }
                 WITH collect(DISTINCT connected) as nodes,
@@ -173,42 +335,53 @@ public class HybridRetriever {
                 RETURN nodes, relationships
                 """, graphExpansionDepth);
 
-            Record result = session.run(expansionQuery,
-                    Map.of("nodeIds", longIds)).single();
+            try {
+                Record result = session.run(expansionQuery,
+                        Map.of("nodeIds", validNodeIds)).single();
 
-            // Process nodes
-            List<GraphEntities.MethodNode> methods = new ArrayList<>();
-            List<GraphEntities.ClassNode> classes = new ArrayList<>();
+                // Process nodes
+                List<GraphEntities.MethodNode> methods = new ArrayList<>();
+                List<GraphEntities.ClassNode> classes = new ArrayList<>();
 
-            for (Value nodeValue : result.get("nodes").values()) {
-                org.neo4j.driver.types.Node node = nodeValue.asNode();
+                for (Value nodeValue : result.get("nodes").values()) {
+                    org.neo4j.driver.types.Node node = nodeValue.asNode();
 
-                if (node.hasLabel("Method")) {
-                    methods.add(buildMethodNode(node));
-                } else if (node.hasLabel("Class")) {
-                    classes.add(buildClassNode(node));
+                    if (node.hasLabel("Method")) {
+                        methods.add(buildMethodNode(node));
+                    } else if (node.hasLabel("Class")) {
+                        classes.add(buildClassNode(node));
+                    }
+                    // Note: We could add Interface nodes if needed in the future
                 }
+
+                // Process relationships
+                List<GraphEntities.Relationship> relationships = new ArrayList<>();
+                for (Value relValue : result.get("relationships").values()) {
+                    org.neo4j.driver.types.Relationship rel = relValue.asRelationship();
+                    relationships.add(buildRelationship(rel));
+                }
+
+                log.info("Graph expansion found {} methods, {} classes, {} relationships",
+                        methods.size(), classes.size(), relationships.size());
+
+                return GraphEntities.GraphContext.builder()
+                        .methods(methods)
+                        .classes(classes)
+                        .relationships(relationships)
+                        .metadata(Map.of(
+                                "expansionDepth", graphExpansionDepth,
+                                "startNodeCount", validNodeIds.size()
+                        ))
+                        .build();
+                        
+            } catch (Exception e) {
+                log.warn("Graph expansion failed, returning empty context: {}", e.getMessage());
+                return GraphEntities.GraphContext.builder()
+                        .methods(new ArrayList<>())
+                        .classes(new ArrayList<>())
+                        .relationships(new ArrayList<>())
+                        .build();
             }
-
-            // Process relationships
-            List<GraphEntities.Relationship> relationships = new ArrayList<>();
-            for (Value relValue : result.get("relationships").values()) {
-                org.neo4j.driver.types.Relationship rel = relValue.asRelationship();
-                relationships.add(buildRelationship(rel));
-            }
-
-            log.info("Graph expansion found {} methods, {} classes, {} relationships",
-                    methods.size(), classes.size(), relationships.size());
-
-            return GraphEntities.GraphContext.builder()
-                    .methods(methods)
-                    .classes(classes)
-                    .relationships(relationships)
-                    .metadata(Map.of(
-                            "expansionDepth", graphExpansionDepth,
-                            "startNodeCount", nodeIds.size()
-                    ))
-                    .build();
         }
     }
 
@@ -221,8 +394,6 @@ public class HybridRetriever {
                 .signature(node.get("signature").asString())
                 .name(node.get("name").asString())
                 .className(node.get("className").asString(null))
-                .summary(node.get("summary").asString(null))
-                .detailedExplanation(node.get("detailedExplanation").asString(null))
                 .businessTags(node.get("businessTags").isNull() ? 
                     List.of() : node.get("businessTags").asList(Value::asString))
                 .metadata(extractMetadata(node))
