@@ -107,17 +107,39 @@ public class LLMConfig {
     }
 
     /**
-     * Configures the Voyage AI embedding model for code vectorization
+     * Configures the Voyage AI embedding model for code vectorization (indexing)
      */
     @Bean
-    public EmbeddingModel embeddingModel() {
+    @Qualifier("documentEmbeddingModel")
+    public EmbeddingModel documentEmbeddingModel() {
         
-        log.info("Configuring Voyage AI embedding model: {}", VoyageAiEmbeddingModelName.VOYAGE_CODE_2);
+        log.info("Configuring Voyage AI document embedding model: {}", VoyageAiEmbeddingModelName.VOYAGE_CODE_2);
 
         return VoyageAiEmbeddingModel.builder()
                 .apiKey(voyageApiKey)
                 .modelName(VoyageAiEmbeddingModelName.VOYAGE_CODE_2)
-                .inputType("document") // Use "document" for indexing, "query" for search queries
+                .inputType("document") // For creating embeddings
+                .timeout(Duration.ofSeconds(60))
+                .maxRetries(3)
+                .logRequests(true)
+                .logResponses(false)
+                .build();
+    }
+    
+    /**
+     * Configures the Voyage AI embedding model for search queries
+     */
+    @Bean
+    @Qualifier("queryEmbeddingModel")
+    @Primary
+    public EmbeddingModel queryEmbeddingModel() {
+        
+        log.info("Configuring Voyage AI query embedding model: {}", VoyageAiEmbeddingModelName.VOYAGE_CODE_2);
+
+        return VoyageAiEmbeddingModel.builder()
+                .apiKey(voyageApiKey)
+                .modelName(VoyageAiEmbeddingModelName.VOYAGE_CODE_2)
+                .inputType("document") // For search queries
                 .timeout(Duration.ofSeconds(60))
                 .maxRetries(3)
                 .logRequests(true)

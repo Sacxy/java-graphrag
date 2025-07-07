@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import java.util.concurrent.CompletableFuture;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -23,13 +24,13 @@ public class FinalizationService {
      * Executes the finalization step
      */
     @Async("stepExecutor")
-    public QueryExecutionContext finalize(QueryExecutionContext context) {
+    public CompletableFuture<QueryExecutionContext> finalize(QueryExecutionContext context) {
         log.debug("Executing finalization [{}]", context.getExecutionId());
         
         try {
             if (context.getGeneratedResult() == null) {
                 log.warn("No generated result available for finalization [{}]", context.getExecutionId());
-                return context;
+                return CompletableFuture.completedFuture(context);
             }
             
             QueryModels.QueryResult result = context.getGeneratedResult();
@@ -61,11 +62,11 @@ public class FinalizationService {
             log.debug("Finalization completed - confidence: {:.2f} [{}]", 
                     confidence, context.getExecutionId());
             
-            return context;
+            return CompletableFuture.completedFuture(context);
         } catch (Exception e) {
             log.error("Finalization failed [{}]", context.getExecutionId(), e);
             context.getMetadata().put("finalizationError", e.getMessage());
-            throw new RuntimeException("Finalization step failed", e);
+            return CompletableFuture.failedFuture(new RuntimeException("Finalization step failed", e));
         }
     }
     

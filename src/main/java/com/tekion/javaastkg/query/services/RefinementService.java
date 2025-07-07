@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Service responsible for the refinement step in the query processing pipeline.
@@ -19,7 +20,7 @@ public class RefinementService {
      * Executes the refinement step
      */
     @Async("stepExecutor")
-    public QueryExecutionContext refine(QueryExecutionContext context) {
+    public CompletableFuture<QueryExecutionContext> refine(QueryExecutionContext context) {
         log.debug("Executing refinement iteration {} [{}]", 
                 context.getRefinementCount(), context.getExecutionId());
         
@@ -34,11 +35,11 @@ public class RefinementService {
             
             log.debug("Refinement preparation completed [{}]", context.getExecutionId());
             
-            return context;
+            return CompletableFuture.completedFuture(context);
         } catch (Exception e) {
             log.error("Refinement failed [{}]", context.getExecutionId(), e);
             context.getMetadata().put("refinementError", e.getMessage());
-            throw new RuntimeException("Refinement step failed", e);
+            return CompletableFuture.failedFuture(new RuntimeException("Refinement step failed", e));
         }
     }
 }

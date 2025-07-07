@@ -8,6 +8,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Service responsible for the distillation step in the query processing pipeline.
@@ -24,13 +25,13 @@ public class DistillationService {
      * Executes the distillation step
      */
     @Async("stepExecutor")
-    public QueryExecutionContext distill(QueryExecutionContext context) {
+    public CompletableFuture<QueryExecutionContext> distill(QueryExecutionContext context) {
         log.debug("Executing distillation [{}]", context.getExecutionId());
         
         try {
             if (context.getRetrievalResult() == null) {
                 log.warn("No retrieval result available for distillation [{}]", context.getExecutionId());
-                return context;
+                return CompletableFuture.completedFuture(context);
             }
             
             List<ContextDistiller.RelevantContext> distilledContext = contextDistiller.distill(
@@ -46,14 +47,25 @@ public class DistillationService {
                     context.getRetrievalResult().getGraphContext().getMethods().isEmpty() ? 0.0 :
                     (double) distilledContext.size() / context.getRetrievalResult().getGraphContext().getMethods().size());
             
-            log.debug("Distillation completed - {} relevant contexts [{}]", 
-                    distilledContext.size(), context.getExecutionId());
+            // Log detailed information about distilled results
+            log.info("Distillation completed - {} relevant contexts out of {} candidates [{}]", 
+                    distilledContext.size(), 
+                    context.getRetrievalResult().getGraphContext().getMethods().size(),
+                    context.getExecutionId());
             
-            return context;
+            // Log top 5 most relevant contexts for visibility
+            distilledContext.stream()
+                    .limit(5)
+                    .forEach(ctx -> log.info("Top context: {} - {} (Reason: {})", 
+                            ctx.getCandidate().getType(),
+                            ctx.getCandidate().getName(),
+                            ctx.getRelevanceReason()));
+            
+            return CompletableFuture.completedFuture(context);
         } catch (Exception e) {
             log.error("Distillation failed [{}]", context.getExecutionId(), e);
             context.getMetadata().put("distillationError", e.getMessage());
-            throw new RuntimeException("Distillation step failed", e);
+            return CompletableFuture.failedFuture(new RuntimeException("Distillation step failed", e));
         }
     }
 }

@@ -96,7 +96,7 @@ public class ContextDistiller {
                         clazz.getName(),
                         "Class: " + clazz.getFullName(),
                         "Type: " + clazz.getType(),
-                        List.of(clazz.getPackageName()),
+                        clazz.getPackageName() != null ? List.of(clazz.getPackageName()) : List.of(),
                         clazz.getMetadata()
                 ));
             }

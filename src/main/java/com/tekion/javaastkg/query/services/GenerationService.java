@@ -4,11 +4,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tekion.javaastkg.model.QueryModels;
 import com.tekion.javaastkg.query.ContextDistiller;
 import com.tekion.javaastkg.query.QueryExecutionContext;
+import com.tekion.javaastkg.util.LLMRateLimiter;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import java.util.concurrent.CompletableFuture;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -26,12 +28,13 @@ public class GenerationService {
     
     private final ChatLanguageModel llm;
     private final ObjectMapper objectMapper;
+    private final LLMRateLimiter rateLimiter;
     
     /**
      * Executes the generation step
      */
     @Async("llmExecutor")
-    public QueryExecutionContext generate(QueryExecutionContext context) {
+    public CompletableFuture<QueryExecutionContext> generate(QueryExecutionContext context) {
         log.debug("Executing generation [{}]", context.getExecutionId());
         
         try {
@@ -49,11 +52,14 @@ public class GenerationService {
                         .build();
                 
                 context.setGeneratedResult(basicResult);
-                return context;
+                return CompletableFuture.completedFuture(context);
             }
             
             String prompt = buildGenerationPrompt(context);
-            String response = llm.generate(prompt);
+            String response = rateLimiter.executeWithRateLimit(
+                () -> llm.generate(prompt), 
+                "LLM Generation for query: " + context.getOriginalQuery()
+            );
             
             QueryModels.QueryResult result = parseGeneratedResponse(response, context);
             context.setGeneratedResult(result);
@@ -63,13 +69,25 @@ public class GenerationService {
             context.getMetadata().put("promptLength", prompt.length());
             context.getMetadata().put("responseLength", response.length());
             
-            log.debug("Generation completed [{}]", context.getExecutionId());
+            // Log detailed information about generated result
+            log.info("Generation completed - Summary: '{}' [{}]", 
+                    result.getSummary(), context.getExecutionId());
+            log.info("Generated {} components and {} relationships [{}]", 
+                    result.getComponents().size(), 
+                    result.getRelationships().size(),
+                    context.getExecutionId());
             
-            return context;
+            // Log top 3 components for visibility
+            result.getComponents().stream()
+                    .limit(3)
+                    .forEach(comp -> log.info("Generated component: {} - {}", 
+                            comp.getType(), comp.getName()));
+            
+            return CompletableFuture.completedFuture(context);
         } catch (Exception e) {
             log.error("Generation failed [{}]", context.getExecutionId(), e);
             context.getMetadata().put("generationError", e.getMessage());
-            throw new RuntimeException("Generation step failed", e);
+            return CompletableFuture.failedFuture(new RuntimeException("Generation step failed", e));
         }
     }
     

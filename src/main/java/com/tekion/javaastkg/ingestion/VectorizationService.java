@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.neo4j.driver.*;
 import org.neo4j.driver.Record;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -40,7 +41,7 @@ public class VectorizationService {
     @Autowired
     public VectorizationService(Driver neo4jDriver,
                                 SessionConfig sessionConfig,
-                                EmbeddingModel embeddingModel) {
+                                @Qualifier("documentEmbeddingModel") EmbeddingModel embeddingModel) {
         this.neo4jDriver = neo4jDriver;
         this.sessionConfig = sessionConfig;
         this.embeddingModel = embeddingModel;

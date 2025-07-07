@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.Arrays;
 
 /**
  * Implements hybrid retrieval combining vector similarity search and graph traversal.
@@ -33,7 +34,7 @@ public class HybridRetriever {
     @Autowired
     public HybridRetriever(Driver neo4jDriver,
                            SessionConfig sessionConfig,
-                           EmbeddingModel embeddingModel) {
+                           @org.springframework.beans.factory.annotation.Qualifier("queryEmbeddingModel") EmbeddingModel embeddingModel) {
         this.neo4jDriver = neo4jDriver;
         this.sessionConfig = sessionConfig;
         this.embeddingModel = embeddingModel;
@@ -48,10 +49,13 @@ public class HybridRetriever {
         try {
             // Step 1: Embed the query
             float[] queryVector = embeddingModel.embed(query).content().vector();
+            log.info("Generated query vector: first 5 values = {}", Arrays.toString(Arrays.copyOf(queryVector, 5)));
+            log.info("Query vector length: {}", queryVector.length);
 
             // Step 2: Vector similarity search
             Map<String, Double> vectorSearchResults = performVectorSearch(queryVector);
             List<String> topMethodIds = new ArrayList<>(vectorSearchResults.keySet());
+            log.info("Vector search found {} methods", topMethodIds.size());
 
             // Step 3: Graph expansion from top results
             GraphEntities.GraphContext graphContext = performGraphExpansion(topMethodIds);
@@ -74,26 +78,49 @@ public class HybridRetriever {
      */
     private Map<String, Double> performVectorSearch(float[] queryVector) {
         try (Session session = neo4jDriver.session(sessionConfig)) {
+            // First check if we have any methods with embeddings
+            String checkQuery = "MATCH (m:Method) WHERE m.embedding IS NOT NULL RETURN count(m) as count";
+            Long embeddingCount = session.run(checkQuery).single().get("count").asLong();
+            log.info("Total methods with embeddings: {}", embeddingCount);
+            
+            if (embeddingCount == 0) {
+                log.warn("No methods have embeddings! Run the vectorization process first.");
+                return new LinkedHashMap<>();
+            }
+            
+            // Check if vector index exists
+            String indexCheckQuery = "SHOW INDEXES WHERE name = 'method_embeddings'";
+            List<Record> indexes = session.run(indexCheckQuery).list();
+            log.info("Vector index 'method_embeddings' exists: {}", !indexes.isEmpty());
+            // Try without the class join first to see if that's the issue
             String query = """
-                CALL db.index.vector.queryNodes('method_embeddings', $limit, $queryVector)
+                CALL db.index.vector.queryNodes('method_embeddings', 50, $queryVector)
                 YIELD node, score
-                WITH node, score
-                MATCH (node)-[:DEFINED_IN]->(c:Class)
                 RETURN id(node) as nodeId, 
                        node.signature as signature,
                        node.name as name,
                        node.summary as summary,
-                       c.fullName as className,
+                       node.className as className,
                        score
                 ORDER BY score DESC
                 """;
 
             Map<String, Double> results = new LinkedHashMap<>();
 
-            List<Record> records = session.run(query, Map.of(
+            Map<String, Object> params = Map.of(
                     "limit", vectorSearchLimit,
                     "queryVector", queryVector
-            )).list();
+            );
+            log.info("Executing vector search with limit={}, vector length={}", vectorSearchLimit, queryVector.length);
+            
+            List<Record> records;
+            try {
+                records = session.run(query, params).list();
+                log.info("Vector search query returned {} records", records.size());
+            } catch (Exception e) {
+                log.error("Vector search query failed", e);
+                return new LinkedHashMap<>();
+            }
 
             for (Record record : records) {
                 String nodeId = String.valueOf(record.get("nodeId").asLong());
@@ -138,7 +165,7 @@ public class HybridRetriever {
                     WHERE connected:Method OR connected:Class
                     RETURN connected, relationships(path) as rels
                 }
-                WITH collect(DISTINCT connected) as nodes, 
+                WITH collect(DISTINCT connected) as nodes,
                      collect(DISTINCT rels) as allRels
                 UNWIND allRels as relList
                 UNWIND relList as rel
@@ -196,7 +223,8 @@ public class HybridRetriever {
                 .className(node.get("className").asString(null))
                 .summary(node.get("summary").asString(null))
                 .detailedExplanation(node.get("detailedExplanation").asString(null))
-                .businessTags(node.get("businessTags").asList(Value::asString))
+                .businessTags(node.get("businessTags").isNull() ? 
+                    List.of() : node.get("businessTags").asList(Value::asString))
                 .metadata(extractMetadata(node))
                 .build();
     }
@@ -237,7 +265,8 @@ public class HybridRetriever {
         metadata.put("startLine", node.get("startLine").asInt(0));
         metadata.put("endLine", node.get("endLine").asInt(0));
         metadata.put("complexity", node.get("complexity").asString("unknown"));
-        metadata.put("annotations", node.get("annotations").asList(Value::asString));
+        metadata.put("annotations", node.get("annotations").isNull() ? 
+            List.of() : node.get("annotations").asList(Value::asString));
         return metadata;
     }
 }

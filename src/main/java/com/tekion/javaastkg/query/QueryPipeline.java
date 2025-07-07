@@ -36,7 +36,7 @@ public class QueryPipeline {
     /**
      * Adds a mandatory step to the pipeline
      */
-    public QueryPipeline step(String name, Function<QueryExecutionContext, QueryExecutionContext> stepFunction) {
+    public QueryPipeline step(String name, Function<QueryExecutionContext, CompletableFuture<QueryExecutionContext>> stepFunction) {
         steps.add(new PipelineStep(name, stepFunction, ctx -> true));
         return this;
     }
@@ -46,7 +46,7 @@ public class QueryPipeline {
      */
     public QueryPipeline conditionalStep(String name, 
                                        Predicate<QueryExecutionContext> condition,
-                                       Function<QueryExecutionContext, QueryExecutionContext> stepFunction) {
+                                       Function<QueryExecutionContext, CompletableFuture<QueryExecutionContext>> stepFunction) {
         steps.add(new PipelineStep(name, stepFunction, condition));
         return this;
     }
@@ -105,23 +105,19 @@ public class QueryPipeline {
             return CompletableFuture.completedFuture(ctx);
         }
         
-        return CompletableFuture
-                .supplyAsync(() -> {
-                    log.debug("Executing step: {} [{}]", step.name, ctx.getExecutionId());
-                    long startTime = System.currentTimeMillis();
-                    
-                    try {
-                        QueryExecutionContext result = step.function.apply(ctx);
-                        result.markStepComplete(step.name);
-                        
-                        long duration = System.currentTimeMillis() - startTime;
-                        log.debug("Step '{}' completed in {}ms [{}]", step.name, duration, ctx.getExecutionId());
-                        
-                        return result;
-                    } catch (Exception e) {
-                        log.error("Step '{}' failed [{}]", step.name, ctx.getExecutionId(), e);
-                        throw new RuntimeException("Step failed: " + step.name, e);
-                    }
+        log.debug("Executing step: {} [{}]", step.name, ctx.getExecutionId());
+        long startTime = System.currentTimeMillis();
+        
+        return step.function.apply(ctx)
+                .thenApply(result -> {
+                    result.markStepComplete(step.name);
+                    long duration = System.currentTimeMillis() - startTime;
+                    log.debug("Step '{}' completed in {}ms [{}]", step.name, duration, ctx.getExecutionId());
+                    return result;
+                })
+                .exceptionally(e -> {
+                    log.error("Step '{}' failed [{}]", step.name, ctx.getExecutionId(), e);
+                    throw new RuntimeException("Step failed: " + step.name, e);
                 })
                 .thenCompose(result -> {
                     // Handle conditional routing after verify step
@@ -225,7 +221,7 @@ public class QueryPipeline {
     @Data
     private static class PipelineStep {
         private final String name;
-        private final Function<QueryExecutionContext, QueryExecutionContext> function;
+        private final Function<QueryExecutionContext, CompletableFuture<QueryExecutionContext>> function;
         private final Predicate<QueryExecutionContext> condition;
     }
 }

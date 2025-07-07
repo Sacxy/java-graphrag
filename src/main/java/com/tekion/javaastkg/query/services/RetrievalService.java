@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Service responsible for the retrieval step in the query processing pipeline.
@@ -23,7 +24,7 @@ public class RetrievalService {
      * Executes the retrieval step
      */
     @Async("retrievalExecutor")
-    public QueryExecutionContext retrieve(QueryExecutionContext context) {
+    public CompletableFuture<QueryExecutionContext> retrieve(QueryExecutionContext context) {
         log.debug("Executing retrieval for query: {} [{}]", 
                 context.getOriginalQuery(), context.getExecutionId());
         
@@ -38,11 +39,11 @@ public class RetrievalService {
             log.debug("Retrieval completed - found {} methods [{}]", 
                     result.getTopMethodIds().size(), context.getExecutionId());
             
-            return context;
+            return CompletableFuture.completedFuture(context);
         } catch (Exception e) {
             log.error("Retrieval failed [{}]", context.getExecutionId(), e);
             context.getMetadata().put("retrievalError", e.getMessage());
-            throw new RuntimeException("Retrieval step failed", e);
+            return CompletableFuture.failedFuture(new RuntimeException("Retrieval step failed", e));
         }
     }
 }

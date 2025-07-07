@@ -10,6 +10,7 @@ import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import java.util.concurrent.CompletableFuture;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,7 +32,7 @@ public class VerificationService {
      * Executes the verification step
      */
     @Async("stepExecutor")
-    public QueryExecutionContext verify(QueryExecutionContext context) {
+    public CompletableFuture<QueryExecutionContext> verify(QueryExecutionContext context) {
         log.debug("Executing verification [{}]", context.getExecutionId());
         
         try {
@@ -39,7 +40,7 @@ public class VerificationService {
                 log.warn("No generated result available for verification [{}]", context.getExecutionId());
                 context.setVerified(false);
                 context.addVerificationError("No result to verify");
-                return context;
+                return CompletableFuture.completedFuture(context);
             }
             
             QueryModels.QueryResult result = context.getGeneratedResult();
@@ -74,13 +75,13 @@ public class VerificationService {
             log.debug("Verification result: {} ({}/{} relationships verified) [{}]", 
                     isValid, verifiedRelationships, totalRelationships, context.getExecutionId());
             
-            return context;
+            return CompletableFuture.completedFuture(context);
         } catch (Exception e) {
             log.error("Verification failed [{}]", context.getExecutionId(), e);
             context.getMetadata().put("verificationError", e.getMessage());
             context.setVerified(false);
             context.addVerificationError("Verification process failed: " + e.getMessage());
-            return context;
+            return CompletableFuture.completedFuture(context);
         }
     }
     

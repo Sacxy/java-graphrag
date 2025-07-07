@@ -1,6 +1,7 @@
 package com.tekion.javaastkg.ingestion;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tekion.javaastkg.util.LLMRateLimiter;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -37,6 +38,7 @@ public class SemanticEnricher {
     private final ObjectMapper objectMapper;
     private final ExecutorService executorService;
     private final String semanticEnrichmentPrompt;
+    private final LLMRateLimiter rateLimiter;
 
     @Value("${project.source.path}")
     private String sourcePath;
@@ -54,12 +56,14 @@ public class SemanticEnricher {
     public SemanticEnricher(Driver neo4jDriver,
                             SessionConfig sessionConfig,
                             @Qualifier("semanticEnricherModel") ChatLanguageModel llm,
-                            @Value("${enrichment.max.concurrent:2}") int maxConcurrentCalls) {
+                            @Value("${enrichment.max.concurrent:2}") int maxConcurrentCalls,
+                            LLMRateLimiter rateLimiter) {
         this.neo4jDriver = neo4jDriver;
         this.sessionConfig = sessionConfig;
         this.llm = llm;
         this.objectMapper = new ObjectMapper();
         this.maxConcurrentCalls = maxConcurrentCalls;
+        this.rateLimiter = rateLimiter;
         // Reduce concurrent threads to avoid rate limits
         this.executorService = Executors.newFixedThreadPool(maxConcurrentCalls);
         // Load prompt template from resources
@@ -201,38 +205,7 @@ public class SemanticEnricher {
                 updateMethodNode(method.id, enrichment);
 
                 log.info("Successfully enriched method: {}", method.signature);
-                
-                // Add delay between calls to respect rate limits
-                if (delayBetweenCalls > 0) {
-                    Thread.sleep(delayBetweenCalls);
-                }
 
-            } catch (dev.ai4j.openai4j.OpenAiHttpException e) {
-                if (e.getMessage().contains("rate_limit_exceeded")) {
-                    log.warn("Rate limit hit, waiting before retry: {}", e.getMessage());
-                    try {
-                        // Extract wait time from error message if available
-                        String msg = e.getMessage();
-                        if (msg.contains("Please try again in")) {
-                            String waitTime = msg.substring(msg.indexOf("Please try again in") + 20);
-                            waitTime = waitTime.substring(0, waitTime.indexOf("."));
-                            long waitMs = Long.parseLong(waitTime.replaceAll("[^0-9]", ""));
-                            log.info("Waiting {} ms as suggested by API", waitMs);
-                            Thread.sleep(waitMs + 100); // Add buffer
-                        } else {
-                            // Default wait time
-                            Thread.sleep(60000); // 1 minute
-                        }
-                        // Retry once after waiting
-                        String code2 = readMethodCode(method);
-                        EnrichmentResult enrichment = callLLMForEnrichment(method, code2);
-                        updateMethodNode(method.id, enrichment);
-                    } catch (Exception retryError) {
-                        log.error("Failed to enrich method after retry: {}", method.signature, retryError);
-                    }
-                } else {
-                    log.error("Failed to enrich method: {}", method.signature, e);
-                }
             } catch (Exception e) {
                 log.error("Failed to enrich method: {}", method.signature, e);
             }
@@ -269,7 +242,10 @@ public class SemanticEnricher {
 
         String response = "";
         try {
-            response = llm.generate(prompt);
+            response = rateLimiter.executeWithRateLimit(
+                () -> llm.generate(prompt),
+                "Semantic enrichment for method: " + method.name
+            );
 
             // Clean up response to ensure it's valid JSON
             response = response.trim();
