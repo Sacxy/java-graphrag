@@ -78,7 +78,7 @@ public class ExpansionQualityFilter {
             .collect(Collectors.toList());
         
         log.info("Filtered to {} relevant terms", filteredTerms.size());
-        log.info("Relevant terms: {}", filteredTerms);
+//        log.info("Relevant terms: {}", filteredTerms);
         return filteredTerms;
     }
     
@@ -126,7 +126,7 @@ public class ExpansionQualityFilter {
             .filter(term -> !isNoiseTerm(term.getTerm()))
             .collect(Collectors.toList());
 
-        log.info("Relevant terms: {}", filteredTerms);
+//        log.info("Relevant terms: {}", filteredTerms);
         
         return QualityFilterResult.builder()
             .originalTermCount(weightedTerms.size())

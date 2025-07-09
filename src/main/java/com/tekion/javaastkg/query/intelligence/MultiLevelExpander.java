@@ -76,7 +76,7 @@ public class MultiLevelExpander {
         );
         
         log.info("Completed multi-level expansion: {} total terms", finalExpansion.getTotalTermCount());
-        log.info("Final Expansion: {}", finalExpansion);
+//        log.info("Final Expansion: {}", finalExpansion);
         return finalExpansion;
     }
     

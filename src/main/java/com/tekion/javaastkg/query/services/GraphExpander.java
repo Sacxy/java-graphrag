@@ -209,9 +209,9 @@ public class GraphExpander {
                     nodes.put(graphNode.getId(), graphNode);
                     
                     // Log details about found nodes
-                    log.info("GRAPH_EXPANDER: Found {} node - id: {}, signature: {}", 
-                            graphNode.getType(), graphNode.getId(), 
-                            graphNode.getProperties().get("signature"));
+//                    log.info("GRAPH_EXPANDER: Found {} node - id: {}, signature: {}",
+//                            graphNode.getType(), graphNode.getId(),
+//                            graphNode.getProperties().get("signature"));
                 }
 
                 // Process relationships
