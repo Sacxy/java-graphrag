@@ -1,5 +1,7 @@
 package com.tekion.javaastkg.query.services;
 
+import com.tekion.javaastkg.agents.entity.AgentBasedEntityExtractor;
+import com.tekion.javaastkg.model.ExtractedEntities;
 import com.tekion.javaastkg.query.intelligence.ExpansionQualityFilter;
 import com.tekion.javaastkg.query.intelligence.IntentBasedSearchStrategy;
 import com.tekion.javaastkg.query.intelligence.MultiLevelExpander;
@@ -25,27 +27,27 @@ import java.util.List;
 @Slf4j
 public class EnhancedEntityExtractor {
 
-    private final EntityExtractor basicExtractor;
+    private final AgentBasedEntityExtractor agentExtractor;
     private final QueryIntentAnalyzer intentAnalyzer;
     private final MultiLevelExpander multiLevelExpander;
     private final ExpansionQualityFilter qualityFilter;
     private final IntentBasedSearchStrategy strategyBuilder;
-    
+
     @Value("${query_optimization.enabled:true}")
     private boolean queryOptimizationEnabled;
-    
+
     @Value("${query_optimization.use_basic_extraction:true}")
     private boolean useBasicExtraction;
-    
+
     @Value("${query_optimization.log_expansion_details:false}")
     private boolean logExpansionDetails;
 
-    public EnhancedEntityExtractor(EntityExtractor basicExtractor,
+    public EnhancedEntityExtractor(AgentBasedEntityExtractor agentExtractor,
                                   QueryIntentAnalyzer intentAnalyzer,
                                   MultiLevelExpander multiLevelExpander,
                                   ExpansionQualityFilter qualityFilter,
                                   IntentBasedSearchStrategy strategyBuilder) {
-        this.basicExtractor = basicExtractor;
+        this.agentExtractor = agentExtractor;
         this.intentAnalyzer = intentAnalyzer;
         this.multiLevelExpander = multiLevelExpander;
         this.qualityFilter = qualityFilter;
@@ -58,10 +60,10 @@ public class EnhancedEntityExtractor {
     public ExtractedEntities extractAndExpand(String query) {
         log.info("Enhanced entity extraction for query: {}", query);
         
-        // If query optimization is disabled, fall back to basic extraction
+        // If query optimization is disabled, fall back to agent extraction
         if (!queryOptimizationEnabled) {
-            log.debug("Query optimization disabled, using basic extraction");
-            return convertToEnhancedEntities(basicExtractor.extract(query), query, null, null);
+            log.debug("Query optimization disabled, using agent extraction");
+            return convertToEnhancedEntities(agentExtractor.extract(query), query, null, null);
         }
         
         try {
@@ -69,15 +71,15 @@ public class EnhancedEntityExtractor {
             QueryIntentAnalyzer.QueryIntent intent = intentAnalyzer.analyzeIntent(query);
             log.info("Detected intent: {} with confidence: {}", intent.getPrimaryIntent(), intent.getConfidence());
             
-            // Step 2: Extract basic entities (optional)
-            EntityExtractor.ExtractedEntities basicEntities = null;
+            // Step 2: Extract entities using agent system (optional)
+            ExtractedEntities agentEntities = null;
             if (useBasicExtraction) {
-                basicEntities = basicExtractor.extract(query);
-                log.info("Basic extraction found: {} classes, {} methods, {} packages, {} terms",
-                    basicEntities.getClasses().size(),
-                    basicEntities.getMethods().size(),
-                    basicEntities.getPackages().size(),
-                    basicEntities.getTerms().size());
+                agentEntities = agentExtractor.extract(query);
+                log.info("Agent extraction found: {} classes, {} methods, {} packages, {} terms",
+                    agentEntities.getClasses().size(),
+                    agentEntities.getMethods().size(),
+                    agentEntities.getPackages().size(),
+                    agentEntities.getTerms().size());
             }
             
             // Step 3: Perform multi-level expansion
@@ -97,7 +99,7 @@ public class EnhancedEntityExtractor {
             
             // Step 6: Build enhanced extracted entities
             ExtractedEntities enhancedEntities = buildEnhancedEntities(
-                basicEntities, expansion, filterResult, intent, searchStrategy
+                agentEntities, expansion, filterResult, intent, searchStrategy
             );
             
             if (logExpansionDetails) {
@@ -107,15 +109,15 @@ public class EnhancedEntityExtractor {
             return enhancedEntities;
             
         } catch (Exception e) {
-            log.error("Enhanced entity extraction failed, falling back to basic extraction", e);
-            return convertToEnhancedEntities(basicExtractor.extract(query), query, null, null);
+            log.error("Enhanced entity extraction failed, falling back to agent extraction", e);
+            return convertToEnhancedEntities(agentExtractor.extract(query), query, null, null);
         }
     }
     
     /**
      * Builds enhanced entities from all components
      */
-    private ExtractedEntities buildEnhancedEntities(EntityExtractor.ExtractedEntities basicEntities,
+    private ExtractedEntities buildEnhancedEntities(ExtractedEntities agentEntities,
                                                    MultiLevelExpander.QueryExpansion expansion,
                                                    ExpansionQualityFilter.QualityFilterResult filterResult,
                                                    QueryIntentAnalyzer.QueryIntent intent,
@@ -143,12 +145,12 @@ public class EnhancedEntityExtractor {
             }
         }
         
-        // Merge with basic entities if available
-        if (basicEntities != null) {
-            expandedClasses.addAll(0, basicEntities.getClasses());
-            expandedMethods.addAll(0, basicEntities.getMethods());
-            expandedPackages.addAll(0, basicEntities.getPackages());
-            expandedTerms.addAll(0, basicEntities.getTerms());
+        // Merge with agent entities if available
+        if (agentEntities != null) {
+            expandedClasses.addAll(0, agentEntities.getClasses());
+            expandedMethods.addAll(0, agentEntities.getMethods());
+            expandedPackages.addAll(0, agentEntities.getPackages());
+            expandedTerms.addAll(0, agentEntities.getTerms());
         }
         
         // Remove duplicates while preserving order
@@ -171,12 +173,6 @@ public class EnhancedEntityExtractor {
             .methods(expandedMethods)
             .packages(expandedPackages)
             .terms(expandedTerms)
-            .intent(intent)
-            .searchStrategy(strategy)
-            .expansion(expansion)
-            .highConfidenceTerms(expansion.getHighConfidenceTerms())
-            .mediumConfidenceTerms(expansion.getMediumConfidenceTerms())
-            .lowConfidenceTerms(expansion.getLowConfidenceTerms())
             .build();
     }
     
@@ -284,7 +280,7 @@ public class EnhancedEntityExtractor {
     /**
      * Converts basic entities to enhanced format
      */
-    private ExtractedEntities convertToEnhancedEntities(EntityExtractor.ExtractedEntities basic,
+    private ExtractedEntities convertToEnhancedEntities(ExtractedEntities basic,
                                                        String query,
                                                        QueryIntentAnalyzer.QueryIntent intent,
                                                        IntentBasedSearchStrategy.SearchStrategy strategy) {
@@ -293,8 +289,6 @@ public class EnhancedEntityExtractor {
             .methods(basic.getMethods())
             .packages(basic.getPackages())
             .terms(basic.getTerms())
-            .intent(intent)
-            .searchStrategy(strategy)
             .build();
     }
     
@@ -307,75 +301,10 @@ public class EnhancedEntityExtractor {
         log.info("Methods: {}", entities.getMethods());
         log.info("Packages: {}", entities.getPackages());
         log.info("Terms: {}", entities.getTerms());
-        log.info("Intent: {}", entities.getIntent() != null ? entities.getIntent().getPrimaryIntent() : "None");
-        log.info("High confidence terms: {}", entities.getHighConfidenceTerms());
+        log.info("Total entities: {}", entities.getTotalCount());
         log.info("========================");
     }
 
-    /**
-     * Enhanced extracted entities with expansion information
-     */
-    @Data
-    @Builder
-    @NoArgsConstructor
-    @AllArgsConstructor
-    public static class ExtractedEntities {
-        private List<String> classes;
-        private List<String> methods;
-        private List<String> packages;
-        private List<String> terms;
-        
-        // Enhanced fields
-        private QueryIntentAnalyzer.QueryIntent intent;
-        private IntentBasedSearchStrategy.SearchStrategy searchStrategy;
-        private MultiLevelExpander.QueryExpansion expansion;
-        private List<String> highConfidenceTerms;
-        private List<String> mediumConfidenceTerms;
-        private List<String> lowConfidenceTerms;
-        
-        /**
-         * Returns true if any entities were extracted
-         */
-        public boolean hasEntities() {
-            return !classes.isEmpty() || !methods.isEmpty() || 
-                   !packages.isEmpty() || !terms.isEmpty();
-        }
-        
-        /**
-         * Returns all entities as a single list
-         */
-        public List<String> getAllEntities() {
-            List<String> all = new ArrayList<>();
-            all.addAll(classes);
-            all.addAll(methods);
-            all.addAll(packages);
-            all.addAll(terms);
-            return all;
-        }
-        
-        /**
-         * Gets entities filtered by confidence level
-         */
-        public List<String> getEntitiesByConfidence(ConfidenceLevel level) {
-            switch (level) {
-                case HIGH:
-                    return highConfidenceTerms != null ? highConfidenceTerms : new ArrayList<>();
-                case MEDIUM:
-                    return mediumConfidenceTerms != null ? mediumConfidenceTerms : new ArrayList<>();
-                case LOW:
-                    return lowConfidenceTerms != null ? lowConfidenceTerms : new ArrayList<>();
-                default:
-                    return getAllEntities();
-            }
-        }
-        
-        /**
-         * Checks if expansion was successful
-         */
-        public boolean isExpanded() {
-            return expansion != null && expansion.getTotalTermCount() > 0;
-        }
-    }
     
     /**
      * Confidence level enumeration

@@ -149,12 +149,15 @@ public class QueryIntentAnalyzer {
         log.info("Analyzing intent for query: {}", query);
         
         // 1. Pattern-based intent detection
+        // TODO: Check What is it doing?
         Map<IntentType, Double> intentScores = detectIntentsWithPatterns(query);
         
         // 2. Context extraction
+        // TODO: Check What is it doing?
         Map<ContextType, List<String>> contexts = extractContexts(query);
         
         // 3. LLM-based refinement for ambiguous cases
+        // TODO: Check What is it doing?
         if (shouldUseLLMFallback(intentScores)) {
             intentScores = refineLLMIntent(query, intentScores);
         }

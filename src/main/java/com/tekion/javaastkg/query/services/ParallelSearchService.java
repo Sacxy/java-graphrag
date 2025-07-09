@@ -1,6 +1,6 @@
 package com.tekion.javaastkg.query.services;
 
-import com.tekion.javaastkg.query.services.EntityExtractor.ExtractedEntities;
+import com.tekion.javaastkg.model.ExtractedEntities;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -41,25 +41,18 @@ public class ParallelSearchService {
     }
 
     /**
-     * Performs full-text search based on enhanced extracted entities
-     */
-    @Async
-    public CompletableFuture<List<SearchResult>> fullTextSearch(EnhancedEntityExtractor.ExtractedEntities entities) {
-        // Convert to basic entities for backward compatibility
-        ExtractedEntities basicEntities = ExtractedEntities.builder()
-            .classes(entities.getClasses())
-            .methods(entities.getMethods())
-            .packages(entities.getPackages())
-            .terms(entities.getTerms())
-            .build();
-        return fullTextSearch(basicEntities);
-    }
-    
-    /**
      * Performs full-text search based on extracted entities
      */
     @Async
     public CompletableFuture<List<SearchResult>> fullTextSearch(ExtractedEntities entities) {
+        return fullTextSearchInternal(entities);
+    }
+    
+    /**
+     * Internal implementation of full-text search
+     */
+    @Async
+    public CompletableFuture<List<SearchResult>> fullTextSearchInternal(ExtractedEntities entities) {
         log.debug("Starting full-text search with entities: {}", entities);
         
         List<SearchResult> results = new ArrayList<>();
@@ -128,7 +121,7 @@ public class ParallelSearchService {
         String query = """
             CALL db.index.fulltext.queryNodes('method_names', $searchTerms)
             YIELD node, score
-            RETURN node.id as nodeId, 
+            RETURN node.id as nodeId,
                    node.name as name,
                    node.signature as signature,
                    node.className as className,

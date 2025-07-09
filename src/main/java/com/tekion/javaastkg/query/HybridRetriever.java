@@ -1,5 +1,7 @@
 package com.tekion.javaastkg.query;
 
+import com.tekion.javaastkg.agents.entity.IntelligentEntityExtractor;
+import com.tekion.javaastkg.model.ExtractedEntities;
 import com.tekion.javaastkg.model.GraphEntities;
 import com.tekion.javaastkg.model.QueryModels;
 import com.tekion.javaastkg.query.services.*;
@@ -26,7 +28,6 @@ public class HybridRetriever {
     private final Driver neo4jDriver;
     private final SessionConfig sessionConfig;
     private final EmbeddingModel embeddingModel;
-    private final EntityExtractor entityExtractor;
     private final EnhancedEntityExtractor enhancedEntityExtractor;
     private final ParallelSearchService parallelSearchService;
     private final SearchResultCombiner searchResultCombiner;
@@ -47,7 +48,6 @@ public class HybridRetriever {
     public HybridRetriever(Driver neo4jDriver,
                            SessionConfig sessionConfig,
                            @Qualifier("queryEmbeddingModel") EmbeddingModel embeddingModel,
-                           EntityExtractor entityExtractor,
                            EnhancedEntityExtractor enhancedEntityExtractor,
                            ParallelSearchService parallelSearchService,
                            SearchResultCombiner searchResultCombiner,
@@ -57,7 +57,6 @@ public class HybridRetriever {
         this.neo4jDriver = neo4jDriver;
         this.sessionConfig = sessionConfig;
         this.embeddingModel = embeddingModel;
-        this.entityExtractor = entityExtractor;
         this.enhancedEntityExtractor = enhancedEntityExtractor;
         this.parallelSearchService = parallelSearchService;
         this.searchResultCombiner = searchResultCombiner;
@@ -74,11 +73,10 @@ public class HybridRetriever {
 
         try {
             // Step 1: Extract and expand entities from query using enhanced extractor
-            EnhancedEntityExtractor.ExtractedEntities entities = enhancedEntityExtractor.extractAndExpand(query);
-            log.debug("Enhanced extraction: classes={}, methods={}, packages={}, terms={}, expanded={}", 
+            ExtractedEntities entities = enhancedEntityExtractor.extractAndExpand(query);
+            log.info("Enhanced extraction: classes={}, methods={}, packages={}, terms={}",
                      entities.getClasses().size(), entities.getMethods().size(), 
-                     entities.getPackages().size(), entities.getTerms().size(),
-                     entities.isExpanded());
+                     entities.getPackages().size(), entities.getTerms().size());
 
             // Step 2: Generate query embedding
             float[] queryVector = embeddingModel.embed(query).content().vector();
