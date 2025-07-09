@@ -49,6 +49,12 @@ dependencies {
     // Spring async and AOP support
     implementation 'org.springframework.boot:spring-boot-starter-aop'
     implementation 'commons-io:commons-io:2.11.0'
+    
+    // Apache Lucene for advanced search capabilities
+    implementation 'org.apache.lucene:lucene-core:9.11.1'
+    implementation 'org.apache.lucene:lucene-analysis-common:9.11.1'
+    implementation 'org.apache.lucene:lucene-queryparser:9.11.1'
+    implementation 'org.apache.lucene:lucene-highlighter:9.11.1'
 }
 
 tasks.named('test') {

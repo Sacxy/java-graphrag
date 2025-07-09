@@ -298,19 +298,47 @@ public class QueryIntentAnalyzer {
      */
     private String buildLLMIntentPrompt(String query) {
         return """
-            Analyze the following code search query and identify the user's intent.
+            You are an expert Java developer analyzing code search queries in a comprehensive AST-based knowledge graph.
             
             Query: "%s"
             
-            Classify the intent into one or more of these categories:
-            - IMPLEMENTATION: User wants to understand how something works, see code implementation
-            - USAGE: User wants to find where something is used, dependencies, references
-            - CONFIGURATION: User is looking for configuration, properties, settings
-            - DISCOVERY: User wants to discover what components handle certain functionality
-            - STATUS: User is interested in states, statuses, conditions, workflow phases
+            Analyze the query and classify intent for Java codebase exploration. Consider these categories:
+            
+            - **IMPLEMENTATION**: User wants to understand how something works, see code implementation, algorithms, or logic
+              Examples: "how does authentication work", "show me the payment processing code", "explain the sorting algorithm"
+            
+            - **USAGE**: User wants to find where something is used, dependencies, references, or calling patterns
+              Examples: "where is UserService used", "find all references to calculateTax", "show me what calls this method"
+            
+            - **CONFIGURATION**: User is looking for configuration, properties, settings, or application setup
+              Examples: "database connection settings", "Spring configuration", "logging configuration"
+            
+            - **DISCOVERY**: User wants to discover what components handle certain functionality or business logic
+              Examples: "find methods that handle user validation", "show me error handling code", "find caching logic"
+            
+            - **STATUS**: User is interested in states, statuses, conditions, workflow phases, or business states
+              Examples: "order status handling", "user account states", "workflow transitions"
+            
+            - **ARCHITECTURE**: User wants to understand system design, patterns, layering, or component relationships
+              Examples: "show me the service layer", "explain the repository pattern", "find all controllers"
+            
+            JAVA-SPECIFIC CONTEXT:
+            - Consider Spring Framework patterns (@Service, @Controller, @Repository, @Configuration)
+            - Recognize JPA/Hibernate queries and database interactions
+            - Identify design patterns (Factory, Builder, Strategy, Observer)
+            - Understand exception handling and error management patterns
+            - Recognize business domain concepts and entities
+            
+            SCORING GUIDANCE:
+            - Score 0.9+ for very clear intent with specific technical terms
+            - Score 0.7-0.8 for likely intent with good context clues
+            - Score 0.5-0.6 for possible intent with some indicators
+            - Score 0.3-0.4 for weak intent with minimal indicators
+            - Score 0.1-0.2 for very unlikely intent
             
             Provide confidence scores (0.0-1.0) for each applicable intent.
             Format: INTENT_TYPE:SCORE, one per line.
+            Only include intents with scores >= 0.3.
             """.formatted(query);
     }
     

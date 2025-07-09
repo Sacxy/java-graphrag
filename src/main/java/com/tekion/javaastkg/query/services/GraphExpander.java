@@ -48,8 +48,13 @@ public class GraphExpander {
      * Expands graph using n-hop traversal with custom parameters
      */
     public SubGraph expandNHop(List<String> startNodeIds, int depth, int maxNodes) {
-        log.debug("Expanding graph from {} nodes with depth={}, maxNodes={}", 
+        log.info("GRAPH_EXPANDER: Expanding graph from {} nodes with depth={}, maxNodes={}", 
                  startNodeIds.size(), depth, maxNodes);
+        
+        // Log some sample node IDs
+        startNodeIds.stream()
+                .limit(3)
+                .forEach(nodeId -> log.info("GRAPH_EXPANDER: Sample start node ID: {}", nodeId));
 
         if (startNodeIds.isEmpty()) {
             return SubGraph.builder()
@@ -62,6 +67,7 @@ public class GraphExpander {
         try (Session session = neo4jDriver.session(sessionConfig)) {
             // Generic n-hop traversal query
             String query = buildExpansionQuery(depth, maxNodes);
+            log.info("GRAPH_EXPANDER: Using query: {}", query);
             
             Map<String, Object> params = Map.of(
                 "nodeIds", startNodeIds,
@@ -101,7 +107,7 @@ public class GraphExpander {
 
             String query = String.format("""
                 MATCH (start)
-                WHERE start.id IN $nodeIds OR toString(id(start)) IN $nodeIds
+                WHERE start.id IN $nodeIds
                 CALL {
                     WITH start
                     MATCH path = (start)-[r*1..%d]-(connected)
@@ -140,7 +146,7 @@ public class GraphExpander {
         if (includeAllRelationships) {
             return String.format("""
                 MATCH (start)
-                WHERE start.id IN $nodeIds OR toString(id(start)) IN $nodeIds
+                WHERE start.id IN $nodeIds
                 CALL {
                     WITH start
                     MATCH path = (start)-[*1..%d]-(connected)
@@ -160,7 +166,7 @@ public class GraphExpander {
             // Only include specific important relationships
             return String.format("""
                 MATCH (start)
-                WHERE start.id IN $nodeIds OR toString(id(start)) IN $nodeIds
+                WHERE start.id IN $nodeIds
                 CALL {
                     WITH start
                     MATCH path = (start)-[r*1..%d]-(connected)
@@ -190,12 +196,22 @@ public class GraphExpander {
         try {
             if (result.hasNext()) {
                 Record record = result.single();
+                
+                // Debug: log the structure of what we got back
+                log.info("GRAPH_EXPANDER: Query returned record with keys: {}", record.keys());
+                log.info("GRAPH_EXPANDER: Nodes array size: {}", record.get("nodes").size());
+                log.info("GRAPH_EXPANDER: Relationships array size: {}", record.get("relationships").size());
 
                 // Process nodes
                 for (Value nodeValue : record.get("nodes").values()) {
                     org.neo4j.driver.types.Node neo4jNode = nodeValue.asNode();
                     GraphNode graphNode = convertToGraphNode(neo4jNode);
                     nodes.put(graphNode.getId(), graphNode);
+                    
+                    // Log details about found nodes
+                    log.info("GRAPH_EXPANDER: Found {} node - id: {}, signature: {}", 
+                            graphNode.getType(), graphNode.getId(), 
+                            graphNode.getProperties().get("signature"));
                 }
 
                 // Process relationships
@@ -206,7 +222,7 @@ public class GraphExpander {
                 }
             }
 
-            log.debug("Built subgraph with {} nodes and {} relationships", 
+            log.info("GRAPH_EXPANDER: Built subgraph with {} nodes and {} relationships", 
                      nodes.size(), relationships.size());
 
             return SubGraph.builder()

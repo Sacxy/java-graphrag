@@ -31,10 +31,28 @@ public class ReRankingService {
     @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.enabled:true}")
     private boolean reRankingEnabled;
 
-    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.threshold:0.6}")
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.threshold:0.35}")
     private double reRankThreshold;
+    
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.adaptive-threshold:true}")
+    private boolean adaptiveThreshold;
+    
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.min-threshold:0.15}")
+    private double minThreshold;
+    
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.max-threshold:0.6}")
+    private double maxThreshold;
+    
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.fallback-scoring.enabled:true}")
+    private boolean fallbackScoringEnabled;
+    
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.fallback-scoring.base-score:0.3}")
+    private double fallbackBaseScore;
+    
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.fallback-scoring.text-match-bonus:0.2}")
+    private double textMatchBonus;
 
-    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.final-limit:50}")
+    @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.final-limit:100}")
     private int finalLimit;
 
     @org.springframework.beans.factory.annotation.Value("${query.retrieval.reranking.batch-size:10}")
@@ -77,7 +95,7 @@ public class ReRankingService {
             
             for (GraphNode node : subGraph.getNodesList()) {
                 NodeEmbeddingData data = nodeData.get(node.getId());
-                double similarity = getPrecomputedSimilarity(queryEmbedding, data);
+                double similarity = getPrecomputedSimilarity(queryEmbedding, data, originalQuery);
                 
                 rankedNodes.add(RankedNode.builder()
                         .node(node)
@@ -117,13 +135,19 @@ public class ReRankingService {
     public List<RankedNode> reRankAndFilter(SubGraph subGraph, String originalQuery) {
         List<RankedNode> rankedNodes = reRank(subGraph, originalQuery);
         
+        // Calculate adaptive threshold based on query and score distribution
+        double effectiveThreshold = calculateEffectiveThreshold(originalQuery, rankedNodes);
+        
         List<RankedNode> filtered = rankedNodes.stream()
-                .filter(node -> node.getSimilarityScore() >= reRankThreshold)
+                .filter(node -> node.getSimilarityScore() >= effectiveThreshold)
                 .limit(finalLimit)
                 .collect(Collectors.toList());
         
-        log.debug("Filtered {} nodes above threshold {:.3f}, keeping top {}", 
-                 filtered.size(), reRankThreshold, finalLimit);
+        log.info("RERANKING: Filtered {} nodes above adaptive threshold {:.3f} (base: {:.3f}), keeping top {}", 
+                 filtered.size(), effectiveThreshold, reRankThreshold, finalLimit);
+        
+        // Log score distribution for debugging
+        logScoreDistribution(rankedNodes, effectiveThreshold);
         
         return filtered;
     }
@@ -306,18 +330,67 @@ public class ReRankingService {
     /**
      * Gets precomputed similarity between query embedding and node embeddings
      */
-    private double getPrecomputedSimilarity(float[] queryEmbedding, NodeEmbeddingData data) {
+    private double getPrecomputedSimilarity(float[] queryEmbedding, NodeEmbeddingData data, String originalQuery) {
         if (data == null || data.getEmbedding() == null) {
-            log.debug("No precomputed embedding available for node");
-            return 0.0;
+            log.debug("No precomputed embedding available for node, using fallback scoring");
+            return calculateFallbackScore(data, originalQuery);
         }
         
         try {
-            return cosineSimilarity(queryEmbedding, data.getEmbedding());
+            double embeddingSimilarity = cosineSimilarity(queryEmbedding, data.getEmbedding());
+            
+            // If fallback scoring is enabled and embedding similarity is low, boost with text matching
+            if (fallbackScoringEnabled && embeddingSimilarity < 0.4) {
+                double textBoost = calculateTextMatchBoost(data, originalQuery);
+                embeddingSimilarity = Math.max(embeddingSimilarity, textBoost);
+                log.debug("Boosted similarity from {:.3f} to {:.3f} using text matching", 
+                         embeddingSimilarity - textBoost, embeddingSimilarity);
+            }
+            
+            return embeddingSimilarity;
         } catch (Exception e) {
             log.debug("Failed to calculate similarity with precomputed embedding: {}", e.getMessage());
+            return calculateFallbackScore(data, originalQuery);
+        }
+    }
+    
+    /**
+     * Calculates fallback score for nodes without embeddings
+     */
+    private double calculateFallbackScore(NodeEmbeddingData data, String originalQuery) {
+        if (!fallbackScoringEnabled) {
             return 0.0;
         }
+        
+        double fallbackScore = fallbackBaseScore;
+        
+        // Add text matching bonus if description exists
+        if (data != null && data.getDescription() != null) {
+            double textBoost = calculateTextMatchBoost(data, originalQuery);
+            fallbackScore += textBoost;
+        }
+        
+        return Math.min(1.0, fallbackScore);
+    }
+    
+    /**
+     * Calculates text matching boost based on query terms in description
+     */
+    private double calculateTextMatchBoost(NodeEmbeddingData data, String originalQuery) {
+        if (data == null || data.getDescription() == null) {
+            return 0.0;
+        }
+        
+        String description = data.getDescription().toLowerCase();
+        String[] queryTerms = originalQuery.toLowerCase().split("\\s+");
+        
+        long matchingTerms = Arrays.stream(queryTerms)
+                .filter(term -> term.length() > 2) // Skip short words
+                .mapToLong(term -> description.contains(term) ? 1 : 0)
+                .sum();
+        
+        double matchRatio = (double) matchingTerms / queryTerms.length;
+        return matchRatio * textMatchBonus;
     }
 
     /**
@@ -344,6 +417,107 @@ public class ReRankingService {
         }
         
         return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
+    }
+
+    /**
+     * Calculates adaptive threshold based on query specificity and score distribution
+     */
+    private double calculateEffectiveThreshold(String originalQuery, List<RankedNode> rankedNodes) {
+        if (!adaptiveThreshold) {
+            return reRankThreshold;
+        }
+        
+        // Analyze query specificity
+        double querySpecificity = analyzeQuerySpecificity(originalQuery);
+        
+        // Analyze score distribution
+        double scoreDistributionFactor = analyzeScoreDistribution(rankedNodes);
+        
+        // Calculate adaptive threshold
+        double adaptiveThreshold = reRankThreshold * querySpecificity * scoreDistributionFactor;
+        
+        // Clamp to min/max bounds
+        adaptiveThreshold = Math.max(minThreshold, Math.min(maxThreshold, adaptiveThreshold));
+        
+        log.debug("RERANKING: Query specificity: {:.3f}, Score distribution factor: {:.3f}, Adaptive threshold: {:.3f}", 
+                 querySpecificity, scoreDistributionFactor, adaptiveThreshold);
+        
+        return adaptiveThreshold;
+    }
+    
+    /**
+     * Analyzes query specificity to determine how strict the threshold should be
+     */
+    private double analyzeQuerySpecificity(String query) {
+        // Specific technical terms suggest higher specificity
+        String[] specificTerms = {"Method", "Class", "Interface", "Exception", "Service", "Controller", "Repository"};
+        String[] genericTerms = {"explain", "what", "how", "show", "find", "get", "all", "list"};
+        
+        long specificCount = Arrays.stream(specificTerms)
+                .mapToLong(term -> query.toLowerCase().contains(term.toLowerCase()) ? 1 : 0)
+                .sum();
+        
+        long genericCount = Arrays.stream(genericTerms)
+                .mapToLong(term -> query.toLowerCase().contains(term.toLowerCase()) ? 1 : 0)
+                .sum();
+        
+        // More specific terms = higher specificity (can use higher threshold)
+        // More generic terms = lower specificity (should use lower threshold)
+        double specificity = 1.0 + (specificCount * 0.2) - (genericCount * 0.1);
+        
+        return Math.max(0.5, Math.min(1.5, specificity));
+    }
+    
+    /**
+     * Analyzes score distribution to adjust threshold based on overall quality
+     */
+    private double analyzeScoreDistribution(List<RankedNode> rankedNodes) {
+        if (rankedNodes.isEmpty()) {
+            return 1.0;
+        }
+        
+        // Calculate statistics
+        double[] scores = rankedNodes.stream()
+                .mapToDouble(RankedNode::getSimilarityScore)
+                .toArray();
+        
+        double mean = Arrays.stream(scores).average().orElse(0.0);
+        double max = Arrays.stream(scores).max().orElse(0.0);
+        double nonZeroCount = Arrays.stream(scores).filter(s -> s > 0.0).count();
+        double totalCount = scores.length;
+        
+        // If most scores are zero (missing embeddings), lower the threshold
+        double nonZeroRatio = nonZeroCount / totalCount;
+        
+        // If the highest score is low, lower the threshold
+        double qualityFactor = Math.min(1.0, max / 0.5); // Normalize against expected good score
+        
+        // Combine factors
+        double distributionFactor = (nonZeroRatio * 0.7) + (qualityFactor * 0.3);
+        
+        log.debug("RERANKING: Score stats - mean: {:.3f}, max: {:.3f}, non-zero ratio: {:.3f}, quality factor: {:.3f}", 
+                 mean, max, nonZeroRatio, qualityFactor);
+        
+        return Math.max(0.3, Math.min(1.2, distributionFactor));
+    }
+    
+    /**
+     * Logs score distribution for debugging
+     */
+    private void logScoreDistribution(List<RankedNode> rankedNodes, double threshold) {
+        if (rankedNodes.isEmpty()) return;
+        
+        double[] scores = rankedNodes.stream()
+                .mapToDouble(RankedNode::getSimilarityScore)
+                .toArray();
+        
+        long aboveThreshold = Arrays.stream(scores).filter(s -> s >= threshold).count();
+        long zeroScores = Arrays.stream(scores).filter(s -> s == 0.0).count();
+        double max = Arrays.stream(scores).max().orElse(0.0);
+        double mean = Arrays.stream(scores).average().orElse(0.0);
+        
+        log.info("RERANKING: Score distribution - Total: {}, Above threshold: {}, Zero scores: {}, Max: {:.3f}, Mean: {:.3f}", 
+                 rankedNodes.size(), aboveThreshold, zeroScores, max, mean);
     }
 
     /**

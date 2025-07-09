@@ -24,6 +24,7 @@ public class MethodEntity {
     private String className;
     private String packageName;
     private String filePath;
+    private String description; // LLM-generated description from DESCRIPTION node
     
     // Method details
     private String returnType;

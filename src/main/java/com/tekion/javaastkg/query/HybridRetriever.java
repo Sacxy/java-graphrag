@@ -77,6 +77,9 @@ public class HybridRetriever {
             log.info("Enhanced extraction: classes={}, methods={}, packages={}, terms={}",
                      entities.getClasses().size(), entities.getMethods().size(), 
                      entities.getPackages().size(), entities.getTerms().size());
+            
+            log.info("HYBRID_RETRIEVER: Using CLASSES for search: {}", entities.getClasses());
+            log.info("HYBRID_RETRIEVER: Using METHODS for search: {}", entities.getMethods());
 
             // Step 2: Generate query embedding
             float[] queryVector = embeddingModel.embed(query).content().vector();
@@ -109,6 +112,15 @@ public class HybridRetriever {
                     .limit(initialLimit)
                     .map(SearchResultCombiner.RankedResult::getNodeId)
                     .collect(Collectors.toList());
+            
+            log.info("HYBRID_RETRIEVER: Top {} nodes for graph expansion (score >= {}): {}", 
+                    topNodeIds.size(), scoreThreshold, topNodeIds.subList(0, Math.min(5, topNodeIds.size())));
+            
+            // Log top scoring results
+            combinedResults.stream()
+                    .limit(5)
+                    .forEach(result -> log.info("HYBRID_RETRIEVER: Top result - nodeId: {}, combinedScore: {}, fullTextScore: {}, vectorScore: {}", 
+                            result.getNodeId(), result.getCombinedScore(), result.getFullTextScore(), result.getVectorScore()));
 
             // Step 7: Expand graph using configurable n-hop traversal
             GraphExpander.SubGraph expandedGraph = graphExpander.expandNHop(topNodeIds, graphExpansionDepth, initialLimit);
@@ -134,8 +146,9 @@ public class HybridRetriever {
                     expandedGraph, fullTextScores, vectorScores, topNodeIds);
             
             // Step 9: Apply re-ranking based on embedding similarity
+            log.info("HYBRID_RETRIEVER: Before re-ranking: {} nodes", expandedGraph.getNodeCount());
             GraphExpander.SubGraph reRankedGraph = reRankingService.applyReRanking(expandedGraph, query);
-            log.debug("Re-ranking completed: {} nodes remaining", reRankedGraph.getNodeCount());
+            log.info("HYBRID_RETRIEVER: After re-ranking: {} nodes remaining", reRankedGraph.getNodeCount());
 
             // Step 10: Convert to compatible GraphContext format
             GraphEntities.GraphContext graphContext = convertToGraphContext(reRankedGraph);
@@ -174,14 +187,23 @@ public class HybridRetriever {
         List<GraphEntities.ClassNode> classes = new ArrayList<>();
         List<GraphEntities.Relationship> relationships = new ArrayList<>();
 
+        log.info("HYBRID_RETRIEVER: Converting subgraph with {} nodes to GraphContext", subGraph.getNodeCount());
+
         // Convert nodes
         for (GraphExpander.GraphNode node : subGraph.getNodesList()) {
-            if ("Method".equals(node.getType())) {
+            String nodeType = node.getType();
+            log.debug("HYBRID_RETRIEVER: Processing node type: '{}', labels: {}", nodeType, node.getLabels());
+            
+            if ("Method".equals(nodeType)) {
                 methods.add(convertToMethodNode(node));
-            } else if ("Class".equals(node.getType())) {
+            } else if ("Class".equals(nodeType)) {
                 classes.add(convertToClassNode(node));
+            } else {
+                log.debug("HYBRID_RETRIEVER: Skipping node with unknown type: '{}'", nodeType);
             }
         }
+        
+        log.info("HYBRID_RETRIEVER: Converted {} methods and {} classes from subgraph", methods.size(), classes.size());
 
         // Convert relationships
         for (GraphExpander.GraphRelationship rel : subGraph.getRelationships()) {
@@ -317,7 +339,7 @@ public class HybridRetriever {
                 // Start from nodes that are either Method or Class
                 MATCH (startNode)
                 WHERE (startNode:Method OR startNode:Class OR startNode:Interface) 
-                  AND (toString(id(startNode)) IN $nodeIds OR startNode.id IN $nodeIds)
+                  AND startNode.id IN $nodeIds
                 CALL {
                     WITH startNode
                     MATCH path = (startNode)-[*0..%d]-(connected)

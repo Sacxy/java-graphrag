@@ -36,6 +36,23 @@ public class QueryOrchestrator {
             // 1. Get structured results from hybrid retriever
             QueryModels.RetrievalResult retrievalResult = hybridRetriever.retrieve(query);
             
+            log.info("QUERY_ORCHESTRATOR: Retrieved {} top method IDs", retrievalResult.getTopMethodIds().size());
+            log.info("QUERY_ORCHESTRATOR: Retrieved {} methods, {} classes in graph context", 
+                    retrievalResult.getGraphContext().getMethods().size(),
+                    retrievalResult.getGraphContext().getClasses().size());
+            log.info("QUERY_ORCHESTRATOR: Score map has {} entries", retrievalResult.getScoreMap().size());
+            
+            // Log some top-scoring methods and classes
+            retrievalResult.getGraphContext().getMethods().stream()
+                    .limit(3)
+                    .forEach(method -> log.info("QUERY_ORCHESTRATOR: Top method - {} (id: {})", 
+                            method.getName(), method.getId()));
+            
+            retrievalResult.getGraphContext().getClasses().stream()
+                    .limit(3)
+                    .forEach(clazz -> log.info("QUERY_ORCHESTRATOR: Top class - {} (id: {})", 
+                            clazz.getName(), clazz.getId()));
+            
             // 2. Generate natural language summary
             String naturalLanguageSummary = generationService.generateNaturalSummary(query, retrievalResult);
             

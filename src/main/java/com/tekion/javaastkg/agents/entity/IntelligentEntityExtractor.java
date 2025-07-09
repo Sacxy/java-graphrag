@@ -3,10 +3,12 @@ package com.tekion.javaastkg.agents.entity;
 import com.tekion.javaastkg.agents.entity.analysis.QueryAnalysisAgent;
 import com.tekion.javaastkg.agents.entity.extraction.ExtractionAgent;
 import com.tekion.javaastkg.agents.entity.extraction.FuzzyMatchingAgent;
+import com.tekion.javaastkg.agents.entity.extraction.LuceneMatchingAgent;
 import com.tekion.javaastkg.agents.entity.extraction.PatternMatchingAgent;
 import com.tekion.javaastkg.agents.entity.extraction.SemanticMatchingAgent;
 import com.tekion.javaastkg.agents.entity.models.EntityMatch;
 import com.tekion.javaastkg.agents.entity.models.QueryContext;
+import com.tekion.javaastkg.config.AgentToggleConfig;
 import com.tekion.javaastkg.model.ExtractedEntities;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -38,8 +40,15 @@ import java.util.stream.Collectors;
 public class IntelligentEntityExtractor {
     
     private final QueryAnalysisAgent queryAnalyzer;
-    private final List<ExtractionAgent> extractionAgents;
+    private final List<ExtractionAgent> allAgents;
+    private final AgentToggleConfig agentToggleConfig;
     private final Executor agentExecutor;
+    
+    // Agent mappings for toggle control
+    private final PatternMatchingAgent patternAgent;
+    private final FuzzyMatchingAgent fuzzyAgent;
+    private final SemanticMatchingAgent semanticAgent;
+    private final LuceneMatchingAgent luceneAgent;
     
     // Configuration
     private static final int MAX_TOTAL_RESULTS = 50;
@@ -49,10 +58,17 @@ public class IntelligentEntityExtractor {
     public IntelligentEntityExtractor(QueryAnalysisAgent queryAnalyzer,
                                     PatternMatchingAgent patternAgent,
                                     FuzzyMatchingAgent fuzzyAgent,
-                                    SemanticMatchingAgent semanticAgent) {
+                                    SemanticMatchingAgent semanticAgent,
+                                    LuceneMatchingAgent luceneAgent,
+                                    AgentToggleConfig agentToggleConfig) {
         this.queryAnalyzer = queryAnalyzer;
-        this.extractionAgents = List.of(patternAgent, fuzzyAgent, semanticAgent);
-        this.agentExecutor = Executors.newFixedThreadPool(4); // Parallel agent execution
+        this.patternAgent = patternAgent;
+        this.fuzzyAgent = fuzzyAgent;
+        this.semanticAgent = semanticAgent;
+        this.luceneAgent = luceneAgent;
+        this.agentToggleConfig = agentToggleConfig;
+        this.allAgents = List.of(patternAgent, fuzzyAgent, semanticAgent, luceneAgent);
+        this.agentExecutor = Executors.newFixedThreadPool(5); // Parallel agent execution
     }
     
     /**
@@ -104,20 +120,33 @@ public class IntelligentEntityExtractor {
         List<ExtractionAgent> applicableAgents = selectApplicableAgents(context);
         
         // Execute agents in parallel
+        log.info("ENTITY_EXTRACTOR: Starting parallel execution of {} agents", applicableAgents.size());
         List<CompletableFuture<AgentResult>> futures = applicableAgents.stream()
-                .map(agent -> CompletableFuture.supplyAsync(() -> executeAgent(agent, context), agentExecutor))
+                .map(agent -> {
+                    log.info("ENTITY_EXTRACTOR: Creating future for agent: {}", agent.getAgentName());
+                    return CompletableFuture.supplyAsync(() -> executeAgent(agent, context), agentExecutor);
+                })
                 .collect(Collectors.toList());
         
         // Wait for all agents to complete
+        log.info("ENTITY_EXTRACTOR: Waiting for {} agent futures to complete", futures.size());
         List<AgentResult> results = new ArrayList<>();
-        for (CompletableFuture<AgentResult> future : futures) {
+        for (int i = 0; i < futures.size(); i++) {
+            CompletableFuture<AgentResult> future = futures.get(i);
             try {
+                log.info("ENTITY_EXTRACTOR: Waiting for future[{}] to complete", i);
                 AgentResult result = future.get();
                 if (result != null) {
                     results.add(result);
+                    log.info("ENTITY_EXTRACTOR: Future[{}] completed successfully - agent: {}, matches: {}", 
+                        i, result.getAgentName(), result.getMatches().size());
+                } else {
+                    log.info("ENTITY_EXTRACTOR: Future[{}] returned null result", i);
                 }
             } catch (Exception e) {
-                log.warn("Agent execution failed", e);
+                log.info("ENTITY_EXTRACTOR: Future[{}] failed with error: {} - message: {}", 
+                    i, e.getClass().getSimpleName(), e.getMessage());
+                log.error("ENTITY_EXTRACTOR: Full error stack trace for future[{}]", i, e);
             }
         }
         
@@ -125,16 +154,106 @@ public class IntelligentEntityExtractor {
     }
     
     /**
-     * Selects agents that can handle the query context
+     * Selects agents that can handle the query context and are enabled
      */
     private List<ExtractionAgent> selectApplicableAgents(QueryContext context) {
-        return extractionAgents.stream()
-                .filter(agent -> agent.canHandle(context))
-                .sorted((a, b) -> Double.compare(
-                    b.getHandlingConfidence(context), 
-                    a.getHandlingConfidence(context)
-                ))
+        log.info("ENTITY_EXTRACTOR: Selecting applicable agents for query: '{}'", context.getOriginalQuery());
+        
+        List<ExtractionAgent> enabledAgents = getEnabledAgents();
+        log.info("ENTITY_EXTRACTOR: Enabled agents status: {}", agentToggleConfig.getEnabledAgentsStatus());
+        
+        List<ExtractionAgent> applicableAgents = new ArrayList<>();
+        
+        for (ExtractionAgent agent : enabledAgents) {
+            boolean canHandle = agent.canHandle(context);
+            double confidence = agent.getHandlingConfidence(context);
+            int priority = getAgentPriority(agent);
+            
+            if (canHandle) {
+                applicableAgents.add(agent);
+                log.info("ENTITY_EXTRACTOR: Agent {} CAN handle query - priority: {}, confidence: {}", 
+                    agent.getAgentName(), priority, confidence);
+            } else {
+                log.info("ENTITY_EXTRACTOR: Agent {} CANNOT handle query - priority: {}, confidence: {}", 
+                    agent.getAgentName(), priority, confidence);
+            }
+        }
+        
+        // Sort by priority first, then by confidence
+        List<ExtractionAgent> sortedAgents = applicableAgents.stream()
+                .sorted((a, b) -> {
+                    int priorityCompare = Integer.compare(getAgentPriority(a), getAgentPriority(b));
+                    if (priorityCompare != 0) {
+                        return priorityCompare;
+                    }
+                    return Double.compare(
+                        b.getHandlingConfidence(context), 
+                        a.getHandlingConfidence(context)
+                    );
+                })
                 .collect(Collectors.toList());
+        
+        log.info("ENTITY_EXTRACTOR: Selected {} applicable agents for execution", sortedAgents.size());
+        for (int i = 0; i < sortedAgents.size(); i++) {
+            ExtractionAgent agent = sortedAgents.get(i);
+            log.info("ENTITY_EXTRACTOR: Execution order[{}] - {} (priority: {}, confidence: {})", 
+                i+1, agent.getAgentName(), getAgentPriority(agent), agent.getHandlingConfidence(context));
+        }
+        
+        return sortedAgents;
+    }
+    
+    /**
+     * Gets list of currently enabled agents based on toggle configuration
+     */
+    private List<ExtractionAgent> getEnabledAgents() {
+        List<ExtractionAgent> enabledAgents = new ArrayList<>();
+        
+        log.info("ENTITY_EXTRACTOR: Checking enabled agents from configuration");
+        
+        if (agentToggleConfig.isPatternMatching() && agentToggleConfig.getPattern().isEnabled()) {
+            enabledAgents.add(patternAgent);
+            log.info("ENTITY_EXTRACTOR: Added PatternMatchingAgent (priority: {})", agentToggleConfig.getPattern().getPriority());
+        }
+        if (agentToggleConfig.isFuzzyMatching() && agentToggleConfig.getFuzzy().isEnabled()) {
+            enabledAgents.add(fuzzyAgent);
+            log.info("ENTITY_EXTRACTOR: Added FuzzyMatchingAgent (priority: {})", agentToggleConfig.getFuzzy().getPriority());
+        }
+        if (agentToggleConfig.isSemanticMatching() && agentToggleConfig.getSemantic().isEnabled()) {
+            enabledAgents.add(semanticAgent);
+            log.info("ENTITY_EXTRACTOR: Added SemanticMatchingAgent (priority: {})", agentToggleConfig.getSemantic().getPriority());
+        }
+        if (agentToggleConfig.isLuceneMatching() && agentToggleConfig.getLucene().isEnabled()) {
+            enabledAgents.add(luceneAgent);
+            log.info("ENTITY_EXTRACTOR: Added LuceneMatchingAgent (priority: {})", agentToggleConfig.getLucene().getPriority());
+        }
+        
+        if (enabledAgents.isEmpty()) {
+            log.info("ENTITY_EXTRACTOR: WARNING - No agents are enabled! Falling back to pattern matching agent");
+            enabledAgents.add(patternAgent);
+        }
+        
+        log.info("ENTITY_EXTRACTOR: Total enabled agents: {}", enabledAgents.size());
+        return enabledAgents;
+    }
+    
+    /**
+     * Gets priority for an agent based on configuration
+     */
+    private int getAgentPriority(ExtractionAgent agent) {
+        String agentName = agent.getAgentName();
+        
+        if (agentName.contains("Pattern")) {
+            return agentToggleConfig.getPattern().getPriority();
+        } else if (agentName.contains("Fuzzy")) {
+            return agentToggleConfig.getFuzzy().getPriority();
+        } else if (agentName.contains("Semantic")) {
+            return agentToggleConfig.getSemantic().getPriority();
+        } else if (agentName.contains("Lucene")) {
+            return agentToggleConfig.getLucene().getPriority();
+        }
+        
+        return 999; // Default low priority
     }
     
     /**
@@ -144,12 +263,12 @@ public class IntelligentEntityExtractor {
         long startTime = System.currentTimeMillis();
         
         try {
-            log.debug("Executing agent: {}", agent.getAgentName());
+            log.info("ENTITY_EXTRACTOR: STARTING execution of agent: {}", agent.getAgentName());
             
             List<EntityMatch> matches = agent.extract(context);
             long executionTime = System.currentTimeMillis() - startTime;
             
-            log.debug("Agent {} completed in {}ms with {} matches", 
+            log.info("ENTITY_EXTRACTOR: Agent {} completed in {}ms with {} matches", 
                     agent.getAgentName(), executionTime, matches.size());
             
             return AgentResult.builder()
@@ -162,7 +281,9 @@ public class IntelligentEntityExtractor {
             
         } catch (Exception e) {
             long executionTime = System.currentTimeMillis() - startTime;
-            log.warn("Agent {} failed after {}ms", agent.getAgentName(), executionTime, e);
+            log.info("ENTITY_EXTRACTOR: Agent {} FAILED after {}ms - error: {} - message: {}", 
+                agent.getAgentName(), executionTime, e.getClass().getSimpleName(), e.getMessage());
+            log.error("ENTITY_EXTRACTOR: Full error stack trace for agent {}", agent.getAgentName(), e);
             
             return AgentResult.builder()
                     .agentName(agent.getAgentName())

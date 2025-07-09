@@ -71,10 +71,12 @@ public class CodebaseEntityRegistry {
     
     @PostConstruct
     public void initialize() {
-        log.info("Initializing CodebaseEntityRegistry...");
+        log.info("REGISTRY: Initializing CodebaseEntityRegistry...");
         refreshFromDatabase();
-        log.info("CodebaseEntityRegistry initialized with {} classes, {} methods", 
+        log.info("REGISTRY: CodebaseEntityRegistry initialized with {} classes, {} methods", 
                 classIndex.size(), methodIndex.size());
+        log.info("REGISTRY: Registry state - isInitialized: {}, classCount: {}, methodCount: {}", 
+                isInitialized, getClassCount(), getMethodCount());
     }
     
     /**
@@ -123,13 +125,15 @@ public class CodebaseEntityRegistry {
             String query = """
                 MATCH (c:Class)
                 OPTIONAL MATCH (c)-[:EXTENDS]->(super:Class)
+                OPTIONAL MATCH (c)-[]->(d:Description)
                 RETURN c.id as id,
                        c.name as name,
                        c.fullName as fullName,
                        c.packageName as packageName,
                        c.filePath as filePath,
                        labels(c) as labels,
-                       super.name as superClass
+                       super.name as superClass,
+                       d.content as description
                 LIMIT 10000
                 """;
 
@@ -140,6 +144,14 @@ public class CodebaseEntityRegistry {
                 try {
                     String id = record.get("id").asString("");
                     String name = record.get("name").asString("");
+
+                    // Log first few records for debugging
+                    if (loadedCount < 5) {
+                        String description = record.get("description").asString("");
+                        log.info("REGISTRY: Processing class record[{}] - id: '{}', name: '{}', package: '{}', description: '{}'", 
+                            loadedCount + 1, id, name, record.get("packageName").asString(""), 
+                            description.length() > 50 ? description.substring(0, 50) + "..." : description);
+                    }
 
                     // Skip invalid records
                     if (id.isEmpty() || name.isEmpty()) {
@@ -154,6 +166,7 @@ public class CodebaseEntityRegistry {
                             .packageName(record.get("packageName").asString(""))
                             .filePath(record.get("filePath").asString(""))
                             .superClass(record.get("superClass").asString(null))
+                            .description(record.get("description").asString(""))
                             .interfaces(new HashSet<>()) // Load separately if needed
                             .methodIds(new ArrayList<>()) // Load separately if needed
                             .methodNames(new ArrayList<>()) // Load separately if needed
@@ -187,9 +200,31 @@ public class CodebaseEntityRegistry {
      * Loads all methods from Neo4j with error handling
      */
     private boolean loadMethods(Session session) {
+        log.info("REGISTRY: Starting loadMethods() - attempting to load methods from Neo4j");
+        
         try {
-            String query = """
-                MATCH (m:Method)-[:BELONGS_TO]->(c:Class)
+            // First, let's discover what relationships actually exist
+            String relationshipQuery = """
+                MATCH (m:Method)-[r]->(c:Class)
+                RETURN type(r) as relationshipType, count(*) as count
+                LIMIT 10
+                """;
+            
+            log.info("REGISTRY: Discovering Method->Class relationships in Neo4j...");
+            var relationshipRecords = session.run(relationshipQuery).list();
+            
+            for (var record : relationshipRecords) {
+                String relType = record.get("relationshipType").asString();
+                int count = record.get("count").asInt();
+                log.info("REGISTRY: Found relationship: Method-[{}]->Class with {} occurrences", relType, count);
+            }
+            
+            // Use the CONTAINS relationship: Class-[CONTAINS]->Method
+            log.info("REGISTRY: Using CONTAINS relationship: Class-[CONTAINS]->Method");
+            
+            String workingQuery = """
+                MATCH (c:Class)-[:CONTAINS]->(m:Method)
+                OPTIONAL MATCH (m)-[]->(d:Description)
                 RETURN m.id as id,
                        m.name as name,
                        m.signature as signature,
@@ -197,21 +232,43 @@ public class CodebaseEntityRegistry {
                        c.packageName as packageName,
                        m.returnType as returnType,
                        m.modifiers as modifiers,
-                       m.isConstructor as isConstructor
+                       m.isConstructor as isConstructor,
+                       d.content as description
                 LIMIT 50000
                 """;
+            String workingRelationship = "CONTAINS";
+            
+            log.info("REGISTRY: Using relationship [{}] for method loading", workingRelationship);
+            log.info("REGISTRY: Executing Neo4j query for methods: {}", workingQuery.trim());
 
             int loadedCount = 0;
-            var records = session.run(query).list();
+            var records = session.run(workingQuery).list();
+            
+            log.info("REGISTRY: Neo4j query returned {} method records", records.size());
+            
+            if (records.isEmpty()) {
+                log.info("REGISTRY: WARNING - No method records returned from Neo4j query!");
+                log.info("REGISTRY: This suggests either no methods exist or the query/relationship structure is wrong");
+                return false;
+            }
 
-            for (var record : records) {
+            for (int i = 0; i < records.size(); i++) {
+                var record = records.get(i);
                 try {
                     String id = record.get("id").asString("");
                     String name = record.get("name").asString("");
 
+                    // Log first few records for debugging
+                    if (i < 5) {
+                        String description = record.get("description").asString("");
+                        log.info("REGISTRY: Processing method record[{}] - id: '{}', name: '{}', className: '{}', signature: '{}', description: '{}'", 
+                            i + 1, id, name, record.get("className").asString(""), record.get("signature").asString(""), 
+                            description.length() > 50 ? description.substring(0, 50) + "..." : description);
+                    }
+
                     // Skip invalid records
                     if (id.isEmpty() || name.isEmpty()) {
-                        log.warn("Skipping method with empty id or name");
+                        log.info("REGISTRY: Skipping method record[{}] with empty id ('{}') or name ('{}')", i + 1, id, name);
                         continue;
                     }
 
@@ -223,6 +280,7 @@ public class CodebaseEntityRegistry {
                             .packageName(record.get("packageName").asString(""))
                             .returnType(record.get("returnType").asString(""))
                             .isConstructor(record.get("isConstructor").asBoolean(false))
+                            .description(record.get("description").asString(""))
                             .nameTokens(tokenizeName(name))
                             .lastModified(LocalDateTime.now())
                             .build();
@@ -234,15 +292,20 @@ public class CodebaseEntityRegistry {
                     loadedCount++;
 
                 } catch (Exception e) {
-                    log.warn("Error processing method record: {}", e.getMessage());
+                    log.info("REGISTRY: Error processing method record[{}]: {} - {}", i + 1, e.getClass().getSimpleName(), e.getMessage());
                 }
             }
 
-            log.info("Loaded {} methods", loadedCount);
+            log.info("REGISTRY: Successfully loaded {} methods out of {} records", loadedCount, records.size());
+            log.info("REGISTRY: Method index now contains {} entries", methodIndex.size());
+            log.info("REGISTRY: Method name index now contains {} unique names", methodNameIndex.size());
+            
             return loadedCount > 0;
 
         } catch (Exception e) {
-            log.error("Failed to load methods from database", e);
+            log.info("REGISTRY: FAILED to load methods from database - error: {} - message: {}", 
+                e.getClass().getSimpleName(), e.getMessage());
+            log.error("REGISTRY: Full error stack trace:", e);
             return false;
         }
     }
@@ -1080,5 +1143,29 @@ public class CodebaseEntityRegistry {
         }
         String trimmed = entityName.trim();
         return hasClass(trimmed) || hasMethods(trimmed);
+    }
+    
+    /**
+     * Returns all class entities in the registry
+     * Used by LuceneIndexPopulator for indexing
+     */
+    public Collection<ClassEntity> getAllClasses() {
+        log.info("REGISTRY: getAllClasses called - returning {} class entities", classIndex.size());
+        if (classIndex.isEmpty()) {
+            log.info("REGISTRY: WARNING - Class index is empty! Registry initialized: {}", isInitialized);
+        }
+        return classIndex.values();
+    }
+    
+    /**
+     * Returns all method entities in the registry
+     * Used by LuceneIndexPopulator for indexing
+     */
+    public Collection<MethodEntity> getAllMethods() {
+        log.info("REGISTRY: getAllMethods called - returning {} method entities", methodIndex.size());
+        if (methodIndex.isEmpty()) {
+            log.info("REGISTRY: WARNING - Method index is empty! Registry initialized: {}", isInitialized);
+        }
+        return methodIndex.values();
     }
 }

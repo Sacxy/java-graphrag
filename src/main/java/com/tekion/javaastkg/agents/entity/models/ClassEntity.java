@@ -23,6 +23,7 @@ public class ClassEntity {
     private String fullName;
     private String packageName;
     private String filePath;
+    private String description; // LLM-generated description from DESCRIPTION node
     
     // Type information
     private ClassType type; // CLASS, INTERFACE, ENUM, ANNOTATION

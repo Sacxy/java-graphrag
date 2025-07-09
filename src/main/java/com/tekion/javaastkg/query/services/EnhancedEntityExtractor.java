@@ -1,6 +1,7 @@
 package com.tekion.javaastkg.query.services;
 
 import com.tekion.javaastkg.agents.entity.AgentBasedEntityExtractor;
+import com.tekion.javaastkg.agents.entity.analysis.LLMEntityAnalyzer;
 import com.tekion.javaastkg.model.ExtractedEntities;
 import com.tekion.javaastkg.query.intelligence.ExpansionQualityFilter;
 import com.tekion.javaastkg.query.intelligence.IntentBasedSearchStrategy;
@@ -28,6 +29,7 @@ import java.util.List;
 public class EnhancedEntityExtractor {
 
     private final AgentBasedEntityExtractor agentExtractor;
+    private final LLMEntityAnalyzer llmEntityAnalyzer;
     private final QueryIntentAnalyzer intentAnalyzer;
     private final MultiLevelExpander multiLevelExpander;
     private final ExpansionQualityFilter qualityFilter;
@@ -39,15 +41,20 @@ public class EnhancedEntityExtractor {
     @Value("${query_optimization.use_basic_extraction:true}")
     private boolean useBasicExtraction;
 
+    @Value("${query_optimization.use_llm_analysis:true}")
+    private boolean useLLMAnalysis;
+
     @Value("${query_optimization.log_expansion_details:false}")
     private boolean logExpansionDetails;
 
     public EnhancedEntityExtractor(AgentBasedEntityExtractor agentExtractor,
+                                  LLMEntityAnalyzer llmEntityAnalyzer,
                                   QueryIntentAnalyzer intentAnalyzer,
                                   MultiLevelExpander multiLevelExpander,
                                   ExpansionQualityFilter qualityFilter,
                                   IntentBasedSearchStrategy strategyBuilder) {
         this.agentExtractor = agentExtractor;
+        this.llmEntityAnalyzer = llmEntityAnalyzer;
         this.intentAnalyzer = intentAnalyzer;
         this.multiLevelExpander = multiLevelExpander;
         this.qualityFilter = qualityFilter;
@@ -71,7 +78,19 @@ public class EnhancedEntityExtractor {
             QueryIntentAnalyzer.QueryIntent intent = intentAnalyzer.analyzeIntent(query);
             log.info("Detected intent: {} with confidence: {}", intent.getPrimaryIntent(), intent.getConfidence());
             
-            // Step 2: Extract entities using agent system (optional)
+            // Step 2: LLM-based entity analysis - NEW STEP REQUESTED BY USER
+            ExtractedEntities llmEntities = null;
+            if (useLLMAnalysis) {
+                log.info("ENHANCED_ENTITY_EXTRACTOR: Starting LLM-based entity analysis for query: {}", query);
+                llmEntities = llmEntityAnalyzer.analyzeEntities(query);
+                log.info("ENHANCED_ENTITY_EXTRACTOR: LLM analysis found: {} classes, {} methods, {} packages, {} terms",
+                    llmEntities.getClasses().size(),
+                    llmEntities.getMethods().size(),
+                    llmEntities.getPackages().size(),
+                    llmEntities.getTerms().size());
+            }
+            
+            // Step 3: Extract entities using agent system (optional)
             ExtractedEntities agentEntities = null;
             if (useBasicExtraction) {
                 agentEntities = agentExtractor.extract(query);
@@ -82,25 +101,32 @@ public class EnhancedEntityExtractor {
                     agentEntities.getTerms().size());
             }
             
-            // Step 3: Perform multi-level expansion
+            // Step 4: Perform multi-level expansion
             MultiLevelExpander.QueryExpansion expansion = multiLevelExpander.expandQuery(query, intent);
             log.info("Multi-level expansion generated {} total terms", expansion.getTotalTermCount());
             
-            // Step 4: Apply quality filtering
+            // Step 5: Apply quality filtering
             ExpansionQualityFilter.QualityFilterResult filterResult = 
                 qualityFilter.filterWithQualityMetrics(expansion.getAllTerms(), query, intent);
             log.info("Quality filter reduced terms from {} to {}",
                 expansion.getTotalTermCount(), filterResult.getFilteredTermCount());
             
-            // Step 5: Create search strategy
+            // Step 6: Create search strategy
             IntentBasedSearchStrategy.SearchStrategy searchStrategy = 
                 strategyBuilder.createStrategy(intent, expansion);
             log.info("Created search strategy: {}", searchStrategy.getStrategyName());
             
-            // Step 6: Build enhanced extracted entities
+            // Step 7: Build enhanced extracted entities
             ExtractedEntities enhancedEntities = buildEnhancedEntities(
-                agentEntities, expansion, filterResult, intent, searchStrategy
+                llmEntities, agentEntities, expansion, filterResult, intent, searchStrategy
             );
+            
+            log.info("ENHANCED_ENTITY_EXTRACTOR: Final combined entities - {} classes, {} methods, {} packages, {} terms",
+                    enhancedEntities.getClasses().size(), enhancedEntities.getMethods().size(),
+                    enhancedEntities.getPackages().size(), enhancedEntities.getTerms().size());
+            
+            log.info("ENHANCED_ENTITY_EXTRACTOR: Final CLASSES: {}", enhancedEntities.getClasses());
+            log.info("ENHANCED_ENTITY_EXTRACTOR: Final METHODS: {}", enhancedEntities.getMethods());
             
             if (logExpansionDetails) {
                 logExpansionDetails(enhancedEntities);
@@ -117,7 +143,8 @@ public class EnhancedEntityExtractor {
     /**
      * Builds enhanced entities from all components
      */
-    private ExtractedEntities buildEnhancedEntities(ExtractedEntities agentEntities,
+    private ExtractedEntities buildEnhancedEntities(ExtractedEntities llmEntities,
+                                                   ExtractedEntities agentEntities,
                                                    MultiLevelExpander.QueryExpansion expansion,
                                                    ExpansionQualityFilter.QualityFilterResult filterResult,
                                                    QueryIntentAnalyzer.QueryIntent intent,
@@ -145,12 +172,20 @@ public class EnhancedEntityExtractor {
             }
         }
         
+        // Merge with LLM entities first (highest priority)
+        if (llmEntities != null) {
+            expandedClasses.addAll(0, llmEntities.getClasses());
+            expandedMethods.addAll(0, llmEntities.getMethods());
+            expandedPackages.addAll(0, llmEntities.getPackages());
+            expandedTerms.addAll(0, llmEntities.getTerms());
+        }
+        
         // Merge with agent entities if available
         if (agentEntities != null) {
-            expandedClasses.addAll(0, agentEntities.getClasses());
-            expandedMethods.addAll(0, agentEntities.getMethods());
-            expandedPackages.addAll(0, agentEntities.getPackages());
-            expandedTerms.addAll(0, agentEntities.getTerms());
+            expandedClasses.addAll(agentEntities.getClasses());
+            expandedMethods.addAll(agentEntities.getMethods());
+            expandedPackages.addAll(agentEntities.getPackages());
+            expandedTerms.addAll(agentEntities.getTerms());
         }
         
         // Remove duplicates while preserving order
