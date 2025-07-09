@@ -45,9 +45,11 @@ public class SearchResultCombiner {
 
         Map<String, RankedResult> combined = new HashMap<>();
 
-        // Process full-text results
+        // Process full-text results with score normalization
         for (SearchResult result : fullTextResults) {
-            double weightedScore = result.getScore() * fullTextWeight;
+            // EMERGENCY FIX: Normalize score before weighting
+            double normalizedScore = normalizeScore(result.getScore(), "fulltext");
+            double weightedScore = normalizedScore * fullTextWeight;
             combined.put(result.getNodeId(), RankedResult.builder()
                     .nodeId(result.getNodeId())
                     .name(result.getName())
@@ -64,8 +66,10 @@ public class SearchResultCombiner {
 
         // Process vector results and merge with existing
         for (SearchResult result : vectorResults) {
-            double weightedScore = result.getScore() * vectorWeight;
-            
+            // EMERGENCY FIX: Normalize score before weighting
+            double normalizedScore = normalizeScore(result.getScore(), "vector");
+            double weightedScore = normalizedScore * vectorWeight;
+
             combined.merge(result.getNodeId(),
                     RankedResult.builder()
                             .nodeId(result.getNodeId())
@@ -84,6 +88,16 @@ public class SearchResultCombiner {
                             .combinedScore(existing.getFullTextScore() + weightedScore)
                             .hasVectorMatch(true)
                             .build());
+        }
+
+        // EMERGENCY FIX: Boost results that appear in both searches (dual matches)
+        for (RankedResult result : combined.values()) {
+            if (result.hasBothMatches()) {
+                double boostedScore = result.getCombinedScore() * 1.2; // 20% boost
+                result.setCombinedScore(boostedScore);
+                log.debug("Boosted dual match {} from {:.3f} to {:.3f}",
+                         result.getNodeId(), result.getCombinedScore() / 1.2, boostedScore);
+            }
         }
 
         // Sort by combined score and apply filtering
@@ -119,6 +133,22 @@ public class SearchResultCombiner {
         } finally {
             this.fullTextWeight = originalFullTextWeight;
             this.vectorWeight = originalVectorWeight;
+        }
+    }
+
+    /**
+     * EMERGENCY FIX: Normalizes scores to 0.0-1.0 range before combination
+     */
+    private double normalizeScore(double score, String searchType) {
+        switch (searchType) {
+            case "fulltext":
+                // Lucene scores typically 0-10, normalize to 0-1
+                return Math.min(1.0, score / 10.0);
+            case "vector":
+                // Cosine similarity already 0-1, but ensure it's clamped
+                return Math.min(1.0, Math.max(0.0, score));
+            default:
+                return score;
         }
     }
 
@@ -212,6 +242,13 @@ public class SearchResultCombiner {
             } else {
                 return "balanced";
             }
+        }
+
+        /**
+         * EMERGENCY FIX: Setter for combined score to support dual match boosting
+         */
+        public void setCombinedScore(double combinedScore) {
+            this.combinedScore = combinedScore;
         }
     }
 }

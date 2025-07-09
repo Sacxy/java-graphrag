@@ -148,16 +148,16 @@ public class QueryIntentAnalyzer {
     public QueryIntent analyzeIntent(String query) {
         log.info("Analyzing intent for query: {}", query);
         
-        // 1. Pattern-based intent detection
-        // TODO: Check What is it doing?
+        // 1. Pattern-based intent detection using regex patterns
+        // Analyzes query text against predefined patterns for each intent type
         Map<IntentType, Double> intentScores = detectIntentsWithPatterns(query);
-        
-        // 2. Context extraction
-        // TODO: Check What is it doing?
+
+        // 2. Context extraction for scope, temporal, quality indicators
+        // Extracts contextual clues like component names, time references, quality terms
         Map<ContextType, List<String>> contexts = extractContexts(query);
-        
+
         // 3. LLM-based refinement for ambiguous cases
-        // TODO: Check What is it doing?
+        // Uses LLM when pattern matching confidence is below threshold
         if (shouldUseLLMFallback(intentScores)) {
             intentScores = refineLLMIntent(query, intentScores);
         }
@@ -167,15 +167,56 @@ public class QueryIntentAnalyzer {
     }
     
     /**
-     * Detects intents using regex patterns
+     * Detects intents using regex patterns with simplified clear signals
      */
     private Map<IntentType, Double> detectIntentsWithPatterns(String query) {
         Map<IntentType, Double> scores = new HashMap<>();
-        
+        String lowerQuery = query.toLowerCase();
+
+        // EMERGENCY FIX: Focus on clear intent signals only
+        // Implementation intent - clear signals
+        if (lowerQuery.contains("how") || lowerQuery.contains("implement") ||
+            lowerQuery.contains("algorithm") || lowerQuery.contains("logic") ||
+            lowerQuery.contains("work") || lowerQuery.contains("process")) {
+            scores.put(IntentType.IMPLEMENTATION, 0.9);
+        }
+
+        // Configuration intent - clear signals
+        if (lowerQuery.contains("config") || lowerQuery.contains("setting") ||
+            lowerQuery.contains("property") || lowerQuery.contains("@configuration")) {
+            scores.put(IntentType.CONFIGURATION, 0.9);
+        }
+
+        // Usage intent - clear signals
+        if (lowerQuery.contains("where") || lowerQuery.contains("used") ||
+            lowerQuery.contains("call") || lowerQuery.contains("reference")) {
+            scores.put(IntentType.USAGE, 0.9);
+        }
+
+        // Status intent - clear signals
+        if (lowerQuery.contains("status") || lowerQuery.contains("state") ||
+            lowerQuery.contains("condition") || lowerQuery.contains("phase")) {
+            scores.put(IntentType.STATUS, 0.9);
+        }
+
+        // Fallback to complex pattern matching if no clear signals
+        if (scores.isEmpty()) {
+            scores = detectIntentsWithComplexPatterns(query);
+        }
+
+        return scores;
+    }
+
+    /**
+     * Fallback complex pattern matching (original implementation)
+     */
+    private Map<IntentType, Double> detectIntentsWithComplexPatterns(String query) {
+        Map<IntentType, Double> scores = new HashMap<>();
+
         for (Map.Entry<IntentType, List<Pattern>> entry : INTENT_PATTERNS.entrySet()) {
             IntentType intent = entry.getKey();
             List<Pattern> patterns = entry.getValue();
-            
+
             double maxScore = 0.0;
             for (Pattern pattern : patterns) {
                 if (pattern.matcher(query).find()) {
@@ -184,7 +225,7 @@ public class QueryIntentAnalyzer {
                     maxScore = Math.max(maxScore, score);
                 }
             }
-            
+
             if (maxScore > 0) {
                 scores.put(intent, maxScore);
             }

@@ -345,6 +345,7 @@ public class EmbeddingBasedExpander {
      * Checks if a word is a stop word
      */
     private boolean isStopWord(String word) {
+        // EMERGENCY FIX: Consistent aggressive stop word filtering
         Set<String> stopWords = Set.of(
             "the", "is", "at", "which", "on", "and", "a", "an",
             "as", "are", "been", "have", "has", "had", "do", "does",
@@ -352,7 +353,11 @@ public class EmbeddingBasedExpander {
             "can", "could", "been", "being", "having", "with", "about",
             "against", "between", "into", "through", "during", "before",
             "after", "above", "below", "to", "from", "up", "down",
-            "in", "out", "on", "off", "over", "under", "again"
+            "in", "out", "on", "off", "over", "under", "again",
+            // ADDED: Query words that cause noise expansion
+            "what", "how", "where", "when", "why", "who", "which",
+            "does", "looks", "like", "show", "get", "find", "see",
+            "tell", "explain", "describe", "understand", "know"
         );
         return stopWords.contains(word.toLowerCase());
     }

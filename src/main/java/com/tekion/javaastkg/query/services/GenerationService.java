@@ -8,6 +8,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.stream.Collectors;
+
 /**
  * Service responsible for generating natural language summaries of retrieval results.
  * Takes structured retrieval results and creates human-readable explanations.
@@ -88,9 +90,26 @@ public class GenerationService {
                     retrievalResult.getGraphContext().getClasses().size());
             
             prompt.append("Retrieved Context from the Codebase:\n\n");
-            
-            // Add methods with scores
-            for (var method : retrievalResult.getGraphContext().getMethods()) {
+
+            // EMERGENCY FIX: Sort methods by relevance score and limit to top 10
+            var topMethods = retrievalResult.getGraphContext().getMethods()
+                .stream()
+                .sorted((a, b) -> Double.compare(
+                    retrievalResult.getScoreMap().getOrDefault(b.getId(), 0.0),
+                    retrievalResult.getScoreMap().getOrDefault(a.getId(), 0.0)
+                ))
+                .limit(10) // Only top 10 methods to prevent prompt explosion
+                .collect(Collectors.toList());
+
+            log.info("GENERATION_SERVICE: Filtered methods from {} to {} based on relevance scores",
+                    retrievalResult.getGraphContext().getMethods().size(), topMethods.size());
+
+            // Add methods with scores and confidence indicators
+            for (var method : topMethods) {
+                double score = retrievalResult.getScoreMap().getOrDefault(method.getId(), 0.0);
+                String confidenceLevel = score > 0.8 ? "HIGH CONFIDENCE" :
+                                       score > 0.5 ? "MEDIUM CONFIDENCE" : "LOW CONFIDENCE";
+
                 prompt.append(String.format("=== METHOD: %s ===\n", method.getName()));
                 prompt.append("Signature: ").append(method.getSignature()).append("\n");
                 if (method.getClassName() != null) {
@@ -99,10 +118,9 @@ public class GenerationService {
                 if (method.getBusinessTags() != null && !method.getBusinessTags().isEmpty()) {
                     prompt.append("Tags: ").append(String.join(", ", method.getBusinessTags())).append("\n");
                 }
-                // Add relevance score if available
-                if (retrievalResult.getScoreMap() != null && retrievalResult.getScoreMap().containsKey(method.getId())) {
-                    prompt.append("Relevance Score: ").append(String.format("%.2f", retrievalResult.getScoreMap().get(method.getId()))).append("\n");
-                }
+                // EMERGENCY FIX: Add relevance score with confidence indicator
+                prompt.append("Relevance Score: ").append(String.format("%.2f", score))
+                      .append(" (").append(confidenceLevel).append(")\n");
                 prompt.append("\n");
             }
             
@@ -118,7 +136,8 @@ public class GenerationService {
                 prompt.append("Abstract: ").append(clazz.isAbstract()).append("\n\n");
             }
             
-            log.info("GENERATION_SERVICE: Final prompt includes {} methods and {} classes", 
+            log.info("GENERATION_SERVICE: Final prompt includes {} methods (filtered from {}) and {} classes",
+                    topMethods.size(),
                     retrievalResult.getGraphContext().getMethods().size(),
                     retrievalResult.getGraphContext().getClasses().size());
         }

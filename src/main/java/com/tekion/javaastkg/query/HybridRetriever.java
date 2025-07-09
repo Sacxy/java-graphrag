@@ -173,8 +173,9 @@ public class HybridRetriever {
                     .build();
 
         } catch (Exception e) {
-            log.error("Hybrid retrieval failed", e);
-            throw new RuntimeException("Failed to perform hybrid retrieval", e);
+            log.error("Hybrid retrieval failed for query: {}", query, e);
+            // EMERGENCY FIX: Graceful degradation instead of RuntimeException
+            return createEmptyRetrievalResult(query, e);
         }
     }
 
@@ -458,5 +459,29 @@ public class HybridRetriever {
         metadata.put("annotations", node.get("annotations").isNull() ? 
             List.of() : node.get("annotations").asList(Value::asString));
         return metadata;
+    }
+
+    /**
+     * EMERGENCY FIX: Creates empty retrieval result for graceful degradation
+     */
+    private QueryModels.RetrievalResult createEmptyRetrievalResult(String query, Exception error) {
+        log.warn("Creating empty retrieval result due to error: {}", error.getMessage());
+
+        return QueryModels.RetrievalResult.builder()
+                .topMethodIds(new ArrayList<>())
+                .graphContext(GraphEntities.GraphContext.builder()
+                        .methods(new ArrayList<>())
+                        .classes(new ArrayList<>())
+                        .relationships(new ArrayList<>())
+                        .build())
+                .scoreMap(new HashMap<>())
+                .metadata(Map.of(
+                        "error", true,
+                        "errorMessage", error.getMessage(),
+                        "errorType", error.getClass().getSimpleName(),
+                        "query", query,
+                        "timestamp", System.currentTimeMillis()
+                ))
+                .build();
     }
 }

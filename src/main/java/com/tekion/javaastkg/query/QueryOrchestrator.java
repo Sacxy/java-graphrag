@@ -31,7 +31,13 @@ public class QueryOrchestrator {
     @Async("queryProcessingExecutor")
     public CompletableFuture<QueryModels.QueryResult> processQuery(String query) {
         log.info("Processing query: {}", query);
-        
+
+        // EMERGENCY FIX: Add input validation
+        if (query == null || query.trim().isEmpty()) {
+            log.warn("Received null or empty query");
+            return CompletableFuture.completedFuture(createErrorResult(query, "Empty query provided"));
+        }
+
         try {
             // 1. Get structured results from hybrid retriever
             QueryModels.RetrievalResult retrievalResult = hybridRetriever.retrieve(query);
@@ -161,6 +167,26 @@ public class QueryOrchestrator {
         return Math.max(0.1, Math.min(1.0, confidence));
     }
     
+    /**
+     * EMERGENCY FIX: Creates error result for input validation failures
+     */
+    private QueryModels.QueryResult createErrorResult(String query, String errorMessage) {
+        return QueryModels.QueryResult.builder()
+                .query(query != null ? query : "")
+                .summary("I apologize, but I cannot process your request: " + errorMessage)
+                .components(List.of())
+                .relationships(List.of())
+                .confidence(0.0)
+                .processingTimeMs(0L)
+                .timestamp(LocalDateTime.now())
+                .metadata(Map.of(
+                        "error", true,
+                        "errorMessage", errorMessage,
+                        "errorType", "ValidationError"
+                ))
+                .build();
+    }
+
     /**
      * Handles execution errors gracefully
      */

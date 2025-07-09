@@ -88,11 +88,16 @@ public class MultiLevelExpander {
         
         Set<WeightedTerm> expansions = new LinkedHashSet<>();
         
-        // Java naming pattern expansions
+        // Java naming pattern expansions with quality checks
         for (String term : baseTerms) {
             List<String> patternExpansions = patternExpander.expandWithPatterns(term);
             for (String expansion : patternExpansions) {
-                expansions.add(new WeightedTerm(expansion, level1Weight, "pattern"));
+                // EMERGENCY FIX: Add expansion-time quality check
+                if (shouldExpandTerm(term, expansion)) {
+                    expansions.add(new WeightedTerm(expansion, level1Weight, "pattern"));
+                } else {
+                    log.debug("Blocked noise expansion: {} -> {}", term, expansion);
+                }
             }
         }
         
@@ -386,11 +391,16 @@ public class MultiLevelExpander {
      * Extracts terms from the original query
      */
     private List<String> extractTerms(String query) {
-        // Remove common stop words and split by common delimiters
+        // EMERGENCY FIX: Aggressive stop word filtering to prevent noise expansion
+        // Added query words that were causing "WhatService", "LikeManager" expansions
         Set<String> stopWords = Set.of(
             "the", "is", "at", "which", "on", "and", "a", "an",
             "as", "are", "been", "have", "has", "had", "do", "does",
-            "did", "will", "would", "should", "could", "may", "might"
+            "did", "will", "would", "should", "could", "may", "might",
+            // ADDED: Query words that cause noise expansion
+            "what", "how", "where", "when", "why", "who", "which",
+            "does", "looks", "like", "show", "get", "find", "see",
+            "tell", "explain", "describe", "understand", "know"
         );
         
         return Arrays.stream(query.split("[\\s,;.!?]+"))
@@ -399,6 +409,74 @@ public class MultiLevelExpander {
             .filter(term -> !stopWords.contains(term))
             .distinct()
             .collect(Collectors.toList());
+    }
+
+    /**
+     * EMERGENCY FIX: Proactive quality check to prevent noise expansion
+     */
+    private boolean shouldExpandTerm(String baseTerm, String expandedTerm) {
+        // Block obvious noise patterns like "WhatService", "LikeManager"
+        if (isQueryWord(baseTerm) && isServicePattern(expandedTerm)) {
+            return false; // Don't expand query words to service patterns
+        }
+
+        // Block if expanded term is just base term + common suffix
+        if (expandedTerm.toLowerCase().startsWith(baseTerm.toLowerCase())) {
+            String suffix = expandedTerm.substring(baseTerm.length());
+            if (isCommonNoiseSuffix(suffix)) {
+                return false;
+            }
+        }
+
+        // Block very short base terms that create meaningless expansions
+        if (baseTerm.length() <= 3 && !isValidShortTerm(baseTerm)) {
+            return false;
+        }
+
+        return true; // Allow expansion
+    }
+
+    /**
+     * Checks if a term is a query word that shouldn't be expanded
+     */
+    private boolean isQueryWord(String term) {
+        Set<String> queryWords = Set.of(
+            "what", "how", "where", "when", "why", "who", "which",
+            "does", "looks", "like", "show", "get", "find", "see"
+        );
+        return queryWords.contains(term.toLowerCase());
+    }
+
+    /**
+     * Checks if expanded term follows service pattern
+     */
+    private boolean isServicePattern(String term) {
+        String lowerTerm = term.toLowerCase();
+        return lowerTerm.endsWith("service") || lowerTerm.endsWith("manager") ||
+               lowerTerm.endsWith("controller") || lowerTerm.endsWith("handler") ||
+               lowerTerm.endsWith("processor") || lowerTerm.endsWith("engine");
+    }
+
+    /**
+     * Checks if suffix is commonly noise-generating
+     */
+    private boolean isCommonNoiseSuffix(String suffix) {
+        Set<String> noiseSuffixes = Set.of(
+            "Service", "Manager", "Controller", "Handler",
+            "Processor", "Engine", "Factory", "Builder"
+        );
+        return noiseSuffixes.contains(suffix);
+    }
+
+    /**
+     * Checks if short term is valid for expansion
+     */
+    private boolean isValidShortTerm(String term) {
+        // Allow common technical abbreviations
+        Set<String> validShortTerms = Set.of(
+            "api", "dto", "dao", "jpa", "sql", "xml", "json", "http", "url", "uri"
+        );
+        return validShortTerms.contains(term.toLowerCase());
     }
 
     /**
