@@ -1,0 +1,304 @@
+spring:
+  application:
+    name: context-aware-knowledge-engine
+
+  # Configure Jackson for proper JSON handling
+  jackson:
+    serialization:
+      indent-output: true
+    deserialization:
+      fail-on-unknown-properties: false
+
+  # Configure WebFlux for large payloads
+  webflux:
+    multipart:
+      max-in-memory-size: 10MB
+    max-in-memory-size: 10MB
+
+# Neo4j Configuration
+neo4j:
+  uri: bolt://localhost:7687
+  username: neo4j
+  password: tekion123
+  database: neo4j
+
+# Spoon AST Service Configuration
+spoon:
+  api:
+    url: http://localhost:8011/aec-studio-cdm-service/r/api/spoon
+    timeout: 60000 # Increased to 60 seconds for large responses
+    polling:
+      interval: 5000 # 5 seconds
+      max-attempts: 60 # 5 minutes total timeout
+    buffer:
+      max-size: 10485760 # 10MB buffer for large AST responses
+
+# LLM Configuration
+llm:
+  # Model selection for different tasks
+  semantic-enricher:
+    provider: openai
+    model: gpt-4o  # Changed to cheaper model for bulk processing
+    temperature: 0.1
+    max-tokens: 10000
+    
+  context-distiller:
+    provider: openai
+    model: gpt-4o  # Simple classification task
+    temperature: 0.0
+    max-tokens: 10000
+    
+  generation-service:
+    provider: openai
+    model: gpt-4o  # Keep quality for user-facing responses
+    temperature: 0.1
+    max-tokens: 2000
+    
+  # Provider configurations
+  openai:
+    api-key: YOUR_API-KEY
+    timeout: 60s
+    max-retries: 3
+
+  # Common rate limiting configuration for all LLM calls
+  rate-limit:
+    delay-ms: 2000 # 2 seconds between retries
+    max-retries: 3 # Maximum retry attempts
+
+  # Voyage AI Configuration for document embeddings
+  voyage:
+    api-key: // YOUR_API-KEY
+    model: voyage-code-3
+    input-type: document # Use "document" for indexing, "query" for search
+    dimension: 1024 # Default dimension for voyage-2
+
+# Project Configuration
+project:
+  source:
+    path: /Users/sakshams/tekion/aec-studio-cdm-service
+
+# Ingestion Pipeline Configuration
+ingestion:
+  schedule:
+    enabled: true
+    initial-delay: 60000 # 1 minute
+    fixed-delay: 3600000 # 1 hour
+  batch:
+    size: 50
+
+# Vectorization Configuration
+vectorization:
+  include-methods: true
+  include-classes: true
+  method-embedding-template: "Java method {name} in class {className}. Signature: {signature}. Business logic: {description}. Handles: {businessTags}. Framework: {annotations}."
+  class-embedding-template: "Java {type} {name} in package {package}. Purpose: {description}. Architecture: {patterns}. Framework: {annotations}. Business domain: {businessConcepts}."
+  batch-size: 100
+  parallel-threads: 5
+  force-recreate-indexes: true
+
+# Enrichment Configuration
+enrichment:
+  delay:
+    ms: 2000 # 2 seconds between API calls
+  max:
+    concurrent: 2 # Only 2 concurrent enrichment threads
+
+# Query Engine Configuration
+query:
+  retrieval:
+    # Parallel search configuration
+    use-fulltext-search: true
+    use-entity-extraction: true
+    fulltext-weight: 0.4
+    vector-weight: 0.6
+    fulltext-search-limit: 50
+    vector-search-limit: 50
+    
+    # Initial retrieval limits and thresholds
+    initial-limit: 100
+    score-threshold: 0.1
+    
+    # Graph expansion configuration
+    graph-expansion-depth: 3
+    expansion:
+      depth: 2
+      max-nodes-per-hop: 50
+      include-all-relationships: true
+      
+    # Re-ranking configuration - EMERGENCY FIX: Increased threshold
+    reranking:
+      enabled: true
+      threshold: 0.5           # INCREASED from 0.35 to 0.5 for higher quality embeddings
+      adaptive-threshold: true  # Enable adaptive thresholding
+      min-threshold: 0.15      # Minimum threshold for very broad queries
+      max-threshold: 0.6       # Maximum threshold for very specific queries
+      final-limit: 100         # Increased limit
+      batch-size: 10
+      
+      # Fallback scoring for nodes without embeddings - EMERGENCY FIX: DISABLED
+      fallback-scoring:
+        enabled: false  # DISABLED: Emergency fix to expose poor embedding quality
+        base-score: 0.3        # Base score for nodes without embeddings
+        text-match-bonus: 0.2  # Bonus for text matches in description
+      
+    # Scoring configuration
+    scoring:
+      fulltext-weight: 0.4
+      vector-weight: 0.6
+      distance-penalty: 0.1
+      min-score: 0.1
+      node-type-boost: 0.2
+
+# Logging Configuration
+logging:
+  level:
+    com.example.knowledge: DEBUG
+    org.neo4j.driver: INFO
+    dev.langchain4j: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+# Query Optimization Configuration
+query_optimization:
+  enabled: true
+  
+  # Intent analysis settings
+  intent_analysis:
+    llm_fallback_enabled: true
+    confidence_threshold: 0.7
+    multi_intent_detection: true
+  
+  # Pattern expansion settings
+  pattern_expansion:
+    java_patterns_enabled: true
+    max_pattern_expansions: 15
+    compound_generation_enabled: true
+    max_compound_terms: 20
+  
+  # Semantic expansion settings
+  semantic_expansion:
+    domain_synonyms_enabled: true
+    max_semantic_expansions: 10
+    embedding_similarity_threshold: 0.65
+    max_embedding_expansions: 15
+    embedding_search_limit: 30
+  
+  # Graph expansion settings
+  graph_expansion:
+    max_relationship_depth: 2
+    max_graph_expansions: 20
+    relationship_types: [CALLS, CONTAINS, EXTENDS, IMPLEMENTS]
+  
+  # Multi-level expansion settings
+  expansion:
+    level1_weight: 1.0
+    level2_weight: 0.8
+    level3_weight: 0.6
+    max_total_expansions: 50
+    enable_parallel_expansion: true
+  
+  # Quality control settings - EMERGENCY FIX: Increased thresholds
+  quality_control:
+    relevance_threshold: 0.7  # INCREASED from 0.5 to 0.7 for higher quality
+    max_total_expansions: 25  # REDUCED from 50 to 25 to limit noise
+    expansion_ranking_enabled: true
+    min_string_similarity: 0.3
+    max_edit_distance: 5
+  
+  # Caching settings
+  caching:
+    enabled: true
+    ttl_hours: 24
+    max_cache_size: 10000
+    warmup_enabled: true
+  
+  # Enhanced entity extraction settings
+  use_basic_extraction: true
+  use_llm_analysis: true
+  log_expansion_details: false
+
+# Agent-based Entity Extraction Configuration
+entity:
+  extraction:
+    agent:
+      enabled: true
+      fallback-enabled: true
+      max-extraction-time-ms: 5000
+      min-confidence-threshold: 0.3
+      max-results: 50
+      enable-performance-logging: false
+      enable-registry-auto-refresh: true
+      registry-refresh-interval-ms: 3600000
+      
+      pattern-matching:
+        enabled: true
+        base-confidence: 0.7
+        max-results: 20
+        
+      fuzzy-matching:
+        enabled: true
+        max-edit-distance: 2
+        min-confidence: 0.4
+        max-results: 20
+        
+      semantic-matching:
+        enabled: true
+        min-similarity-threshold: 0.6
+        high-similarity-threshold: 0.8
+        max-results: 15
+
+# Agent Toggle Configuration - For Testing and Development
+# EMERGENCY FIX: Disabled underperforming agents based on improvement plan analysis
+agents:
+  toggle:
+    # Master switches for each agent type - DISABLED UNDERPERFORMING AGENTS
+    pattern-matching: false  # DISABLED: Showing 0 results for complex queries
+    fuzzy-matching: false    # DISABLED: Showing 0 results for complex queries
+    semantic-matching: false # DISABLED: Showing 0 results for complex queries
+    lucene-matching: true    # KEPT: Only agent showing consistent results
+    
+    # Pattern Matching Agent Configuration - DISABLED
+    pattern:
+      enabled: false  # DISABLED: Emergency fix for underperforming agent
+      priority: 1
+      exact-match: true
+      prefix-match: true
+      suffix-match: true
+      wildcard-match: true
+      compound-match: true
+
+    # Fuzzy Matching Agent Configuration - DISABLED
+    fuzzy:
+      enabled: false  # DISABLED: Emergency fix for underperforming agent
+      priority: 2
+      max-edit-distance: 2
+      phonetic-match: true
+      abbreviation-match: true
+      typo-correction: true
+
+    # Semantic Matching Agent Configuration - DISABLED
+    semantic:
+      enabled: false  # DISABLED: Emergency fix for underperforming agent
+      priority: 3
+      embedding-search: true
+      domain-terms: true
+      min-similarity-threshold: 0.7
+      
+    # Lucene Matching Agent Configuration
+    lucene:
+      enabled: true
+      priority: 4
+      standard-search: true
+      fuzzy-search: true
+      wildcard-search: true
+      phrase-search: true
+      boolean-search: true
+      highlighting: true
+      max-results: 20
+
+# Server Configuration
+server:
+  port: 8080
+  error:
+    include-message: always
+    include-stacktrace: on-param
