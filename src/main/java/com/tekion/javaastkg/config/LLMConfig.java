@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import jakarta.annotation.PostConstruct;
 
 import java.time.Duration;
 
@@ -26,6 +27,61 @@ public class LLMConfig {
 
     @Value("${llm.voyage.api-key}")
     private String voyageApiKey;
+
+    @Value("${google.api.key}")
+    private String googleApiKey;
+
+    /**
+     * Initialize Google API key for ADK framework
+     * CRITICAL: ADK's LlmRegistry needs GOOGLE_API_KEY as environment variable during static initialization
+     * We cannot set actual environment variables from Java, so we use reflection to modify the environment map
+     */
+    @PostConstruct
+    public void initializeGoogleApiKey() {
+        if (googleApiKey != null && !googleApiKey.trim().isEmpty() && !"YOUR_GOOGLE_API_KEY_HERE".equals(googleApiKey)) {
+            try {
+                // Set system property (fallback)
+                System.setProperty("GOOGLE_API_KEY", googleApiKey);
+                
+                // CRITICAL: Use reflection to set the environment variable for ADK
+                setEnvironmentVariable("GOOGLE_API_KEY", googleApiKey);
+                
+                log.info("✅ Google API key configured for ADK framework");
+            } catch (Exception e) {
+                log.error("❌ Failed to configure Google API key for ADK: {}", e.getMessage());
+                // Fallback: at least log what the user needs to do
+                log.error("🔧 MANUAL FIX: Set environment variable before starting: export GOOGLE_API_KEY=\"{}\"", 
+                    googleApiKey.substring(0, 10) + "...");
+            }
+        } else {
+            log.warn("❌ Google API key not configured in application.yml");
+        }
+    }
+    
+    /**
+     * Use reflection to set environment variable for ADK compatibility
+     * This is a workaround because ADK expects GOOGLE_API_KEY environment variable
+     */
+    @SuppressWarnings("unchecked")
+    private void setEnvironmentVariable(String key, String value) throws Exception {
+        try {
+            Class<?> processEnvironmentClass = Class.forName("java.lang.ProcessEnvironment");
+            java.lang.reflect.Field theEnvironmentField = processEnvironmentClass.getDeclaredField("theEnvironment");
+            theEnvironmentField.setAccessible(true);
+            java.util.Map<String, String> env = (java.util.Map<String, String>) theEnvironmentField.get(null);
+            env.put(key, value);
+            
+            java.lang.reflect.Field theCaseInsensitiveEnvironmentField = processEnvironmentClass.getDeclaredField("theCaseInsensitiveEnvironment");
+            theCaseInsensitiveEnvironmentField.setAccessible(true);
+            java.util.Map<String, String> cienv = (java.util.Map<String, String>) theCaseInsensitiveEnvironmentField.get(null);
+            cienv.put(key, value);
+            
+            log.debug("Successfully set environment variable {} via reflection", key);
+        } catch (Exception e) {
+            log.warn("Reflection approach failed, ADK may need manual environment setup: {}", e.getMessage());
+            throw e;
+        }
+    }
 
     /**
      * Chat model for semantic enrichment (bulk processing)
