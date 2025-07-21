@@ -288,7 +288,7 @@ public class SemanticCodeHunter {
                 log.info("🧠 SEMANTIC: Using vector embeddings for semantic similarity search of '{}'", entity);
                 try {
                     // Generate query embedding
-                    Embedding queryEmbedding = embeddingModel.embed(entity);
+                    Embedding queryEmbedding = embeddingModel.embed(entity).content();
                     float[] queryVector = queryEmbedding.vector();
                     log.info("🔢 Generated embedding vector for '{}' (dimension: {})", entity, queryVector.length);
                     
@@ -480,11 +480,11 @@ public class SemanticCodeHunter {
      * Create EntityMatch from vector search result (semantic similarity)
      */
     private static EntityMatch createEntityMatchFromVectorResult(
-            com.tekion.javaastkg.query.services.SearchResult result, String source) {
+            SearchResult result, String source) {
         
         String entityId = result.getNodeId();
-        String name = result.getNodeLabel(); // Use label as name for now
-        String entityType = result.getNodeType() != null ? result.getNodeType() : "UNKNOWN";
+        String name = result.getName(); // Use label as name for now
+        String entityType = result.getType() != null ? result.getType() : "UNKNOWN";
         
         // Vector similarity provides high-quality confidence scores
         double confidence = Math.min(0.95, result.getScore() * 0.9); // Scale and cap confidence
@@ -506,7 +506,7 @@ public class SemanticCodeHunter {
                 "originalScore", result.getScore(),
                 "entityType", entityType,
                 "vectorSearch", true,
-                "nodeType", result.getNodeType() != null ? result.getNodeType() : "unknown"
+                "nodeType", result.getType() != null ? result.getType() : "unknown"
             ))
             .build();
     }

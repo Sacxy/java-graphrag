@@ -182,13 +182,11 @@ public class StructuralCodeExplorer extends BaseAdkTool {
             RETURN n.id as id, 
                    labels(n) as labels,
                    n.name as name,
-                   n.type as type,
-                   n.className as className,
-                   n.packageName as packageName,
-                   n.fullName as fullName,
+                   n.qualifiedName as qualifiedName,
                    n.signature as signature,
-                   n.sourceFile as sourceFile,
-                   n.lineNumber as lineNumber
+                   n.lineNumber as lineNumber,
+                   n.isAbstract as isAbstract,
+                   n.isFinal as isFinal
             """;
         
         try {
@@ -196,16 +194,32 @@ public class StructuralCodeExplorer extends BaseAdkTool {
             
             if (!results.isEmpty()) {
                 Map<String, Object> record = results.get(0);
+                List<String> labels = (List<String>) record.getOrDefault("labels", List.of());
+                String name = (String) record.getOrDefault("name", "");
+                String qualifiedName = (String) record.getOrDefault("qualifiedName", "");
+                
+                // Extract package name from qualified name if available
+                String packageName = "";
+                String className = name;
+                if (qualifiedName != null && qualifiedName.contains(".")) {
+                    int lastDot = qualifiedName.lastIndexOf(".");
+                    packageName = qualifiedName.substring(0, lastDot);
+                    className = qualifiedName.substring(lastDot + 1);
+                }
+                
+                // Determine type from labels
+                String type = labels.isEmpty() ? "UNKNOWN" : labels.get(0);
+                
                 return new NodeDetails(
                     (String) record.get("id"),
-                    (List<String>) record.getOrDefault("labels", List.of()),
-                    (String) record.getOrDefault("name", ""),
-                    (String) record.getOrDefault("type", ""),
-                    (String) record.getOrDefault("className", ""),
-                    (String) record.getOrDefault("packageName", ""),
-                    (String) record.getOrDefault("fullName", ""),
+                    labels,
+                    name,
+                    type,
+                    className,
+                    packageName,
+                    qualifiedName,
                     (String) record.getOrDefault("signature", ""),
-                    (String) record.getOrDefault("sourceFile", ""),
+                    "", // sourceFile - not available in current schema
                     (Integer) record.getOrDefault("lineNumber", 0)
                 );
             }
@@ -247,7 +261,7 @@ public class StructuralCodeExplorer extends BaseAdkTool {
                 return """
                     MATCH (n {id: $nodeId})-[r:CONTAINS|EXTENDS|IMPLEMENTS]->(target)
                     RETURN n.id as sourceId, target.id as targetId, type(r) as relationshipType,
-                           r.weight as weight, properties(r) as properties
+                           coalesce(r.weight, 1.0) as weight, properties(r) as properties
                     LIMIT 10
                     """;
                     
@@ -256,9 +270,9 @@ public class StructuralCodeExplorer extends BaseAdkTool {
                     MATCH (n {id: $nodeId})-[r]->(target)
                     WHERE type(r) IN ['CONTAINS', 'EXTENDS', 'IMPLEMENTS', 'CALLS', 'DEPENDS_ON', 
                                      'HAS_PARAMETER', 'HAS_FIELD', 'USES_FIELD', 'RETURNS', 'THROWS',
-                                     'ANNOTATED_BY', 'OVERRIDES', 'INSTANTIATES']
+                                     'ANNOTATED_BY', 'OVERRIDES', 'INSTANTIATES', 'HAS_DESCRIPTION']
                     RETURN n.id as sourceId, target.id as targetId, type(r) as relationshipType,
-                           r.weight as weight, properties(r) as properties
+                           coalesce(r.weight, 1.0) as weight, properties(r) as properties
                     LIMIT 50
                     """;
                     
@@ -268,7 +282,7 @@ public class StructuralCodeExplorer extends BaseAdkTool {
                     MATCH (n {id: $nodeId})-[r]->(target)
                     WHERE type(r) IN ['CONTAINS', 'EXTENDS', 'IMPLEMENTS', 'CALLS', 'DEPENDS_ON', 'HAS_FIELD', 'USES_FIELD']
                     RETURN n.id as sourceId, target.id as targetId, type(r) as relationshipType,
-                           r.weight as weight, properties(r) as properties
+                           coalesce(r.weight, 1.0) as weight, properties(r) as properties
                     LIMIT 25
                     """;
         }
@@ -295,6 +309,14 @@ public class StructuralCodeExplorer extends BaseAdkTool {
         // Pattern 4: High Coupling
         ArchitecturalPattern couplingPattern = detectHighCoupling(graph);
         if (couplingPattern != null) patterns.add(couplingPattern);
+        
+        // Pattern 5: Enum Value Discovery
+        List<ArchitecturalPattern> enumPatterns = exploreEnumValues(graph);
+        patterns.addAll(enumPatterns);
+        
+        // Pattern 6: Status Field Discovery
+        List<ArchitecturalPattern> statusPatterns = exploreStatusFields(graph);
+        patterns.addAll(statusPatterns);
         
         return patterns;
     }
@@ -427,6 +449,118 @@ public class StructuralCodeExplorer extends BaseAdkTool {
         
         recursionStack.remove(nodeId);
         return false;
+    }
+    
+    /**
+     * Explores enum values for discovered enum types
+     */
+    private static List<ArchitecturalPattern> exploreEnumValues(StructuralGraph graph) {
+        List<ArchitecturalPattern> enumPatterns = new ArrayList<>();
+        
+        // Find all enum nodes in the graph
+        for (NodeDetails node : graph.getNodes()) {
+            if (node.getLabels().contains("ENUM") || node.getType().equals("ENUM")) {
+                
+                // Query for enum values
+                String enumValuesQuery = """
+                    MATCH (e {id: $enumId})-[:CONTAINS]->(value)
+                    RETURN value.name as valueName, value.id as valueId
+                    """;
+                
+                try {
+                    List<Map<String, Object>> enumValues = neo4jService.executeCypherQuery(
+                        enumValuesQuery, Map.of("enumId", node.getId()));
+                    
+                    if (!enumValues.isEmpty()) {
+                        Map<String, Object> enumMetadata = new HashMap<>();
+                        enumMetadata.put("enumName", node.getName());
+                        enumMetadata.put("enumId", node.getId());
+                        enumMetadata.put("valueCount", enumValues.size());
+                        enumMetadata.put("values", enumValues.stream()
+                            .map(v -> v.get("valueName")).collect(Collectors.toList()));
+                        
+                        enumPatterns.add(new ArchitecturalPattern(
+                            "ENUM_VALUES_DISCOVERED",
+                            String.format("Enum %s contains %d values", 
+                                node.getName(), enumValues.size()),
+                            1.0,
+                            enumMetadata
+                        ));
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to explore enum values for: {}", node.getName(), e);
+                }
+            }
+        }
+        
+        return enumPatterns;
+    }
+    
+    /**
+     * Explores status fields in classes and their connection to enums
+     */
+    private static List<ArchitecturalPattern> exploreStatusFields(StructuralGraph graph) {
+        List<ArchitecturalPattern> statusPatterns = new ArrayList<>();
+        
+        // Find all class nodes in the graph
+        for (NodeDetails node : graph.getNodes()) {
+            if (node.getLabels().contains("CLASS") || node.getType().equals("CLASS")) {
+                
+                // Query for status fields
+                String statusFieldQuery = """
+                    MATCH (c {id: $classId})-[:HAS_FIELD]->(field)
+                    WHERE field.name CONTAINS 'status' OR field.name CONTAINS 'Status' OR field.name CONTAINS 'STATE'
+                    RETURN field.name as fieldName, field.id as fieldId, field.type as fieldType
+                    """;
+                
+                try {
+                    List<Map<String, Object>> statusFields = neo4jService.executeCypherQuery(
+                        statusFieldQuery, Map.of("classId", node.getId()));
+                    
+                    for (Map<String, Object> field : statusFields) {
+                        String fieldName = (String) field.get("fieldName");
+                        String fieldType = (String) field.get("fieldType");
+                        
+                        // Check if field type is an enum
+                        if (fieldType != null) {
+                            String enumQuery = """
+                                MATCH (e:ENUM)
+                                WHERE e.name = $fieldType OR e.qualifiedName = $fieldType
+                                RETURN e.id as enumId, e.name as enumName
+                                """;
+                            
+                            List<Map<String, Object>> enumResults = neo4jService.executeCypherQuery(
+                                enumQuery, Map.of("fieldType", fieldType));
+                            
+                            if (!enumResults.isEmpty()) {
+                                Map<String, Object> enumData = enumResults.get(0);
+                                String enumId = (String) enumData.get("enumId");
+                                String enumName = (String) enumData.get("enumName");
+                                
+                                Map<String, Object> statusMetadata = new HashMap<>();
+                                statusMetadata.put("className", node.getName());
+                                statusMetadata.put("fieldName", fieldName);
+                                statusMetadata.put("fieldType", fieldType);
+                                statusMetadata.put("enumId", enumId);
+                                statusMetadata.put("enumName", enumName);
+                                
+                                statusPatterns.add(new ArchitecturalPattern(
+                                    "STATUS_FIELD_ENUM_PATTERN",
+                                    String.format("Class %s has status field '%s' of enum type %s", 
+                                        node.getName(), fieldName, enumName),
+                                    1.0,
+                                    statusMetadata
+                                ));
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to explore status fields for: {}", node.getName(), e);
+                }
+            }
+        }
+        
+        return statusPatterns;
     }
     
     /**

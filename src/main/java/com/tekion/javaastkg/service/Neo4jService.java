@@ -27,25 +27,51 @@ public class Neo4jService {
         log.info("🔍 Neo4j full-text search: entityType={}, query={}, maxResults={}", 
             entityType, query, maxResults);
         
-        // TODO: Implement actual Neo4j full-text search
-        // For now, return mock results for compilation
-        List<Map<String, Object>> results = new ArrayList<>();
-        
-        // Mock result for demonstration
-        if (query.contains("user") || query.contains("User")) {
-            Map<String, Object> mockResult = new HashMap<>();
-            mockResult.put("id", "user-service-123");
-            mockResult.put("name", "UserService");
-            mockResult.put("signature", "public class UserService");
-            mockResult.put("filePath", "/src/main/java/com/example/UserService.java");
-            mockResult.put("startLine", 15);
-            mockResult.put("endLine", 89);
-            mockResult.put("score", 0.95);
-            results.add(mockResult);
+        // Check if Neo4jContextProvider is initialized
+        if (!com.tekion.javaastkg.adk.context.Neo4jContextProvider.isInitialized()) {
+            throw new IllegalStateException("Neo4jContextProvider not initialized. Cannot execute full-text search without proper Neo4j connection.");
         }
         
-        log.debug("📊 Full-text search returned {} results", results.size());
-        return results;
+        // Use real Neo4j implementation
+        try {
+            var driver = com.tekion.javaastkg.adk.context.Neo4jContextProvider.getNeo4jDriver();
+            var sessionConfig = com.tekion.javaastkg.adk.context.Neo4jContextProvider.getSessionConfig();
+            
+            try (var session = driver.session(sessionConfig)) {
+                String cypherQuery = """
+                    CALL db.index.fulltext.queryNodes('entity_search', $query)
+                    YIELD node, score
+                    WHERE any(label IN labels(node) WHERE label = $entityType)
+                    RETURN node.id as id, node.name as name, node.signature as signature, 
+                           node.filePath as filePath, node.startLine as startLine, 
+                           node.endLine as endLine, score
+                    ORDER BY score DESC
+                    LIMIT $maxResults
+                    """;
+                
+                var result = session.run(cypherQuery, Map.of(
+                    "query", query,
+                    "entityType", entityType,
+                    "maxResults", maxResults
+                ));
+                
+                List<Map<String, Object>> results = new ArrayList<>();
+                while (result.hasNext()) {
+                    var record = result.next();
+                    Map<String, Object> recordMap = new HashMap<>();
+                    for (String key : record.keys()) {
+                        recordMap.put(key, record.get(key).asObject());
+                    }
+                    results.add(recordMap);
+                }
+                
+                log.debug("📊 Full-text search returned {} results", results.size());
+                return results;
+            }
+        } catch (Exception e) {
+            log.error("❌ Failed to execute full-text search", e);
+            throw new RuntimeException("Failed to execute full-text search", e);
+        }
     }
     
     /**
@@ -55,25 +81,49 @@ public class Neo4jService {
         
         log.debug("🔗 Finding related entities: entityName={}, maxHops={}", entityName, maxHops);
         
-        // TODO: Implement actual Neo4j relationship traversal
-        // For now, return mock results for compilation
-        List<Map<String, Object>> results = new ArrayList<>();
-        
-        // Mock related entity
-        if (entityName.contains("user") || entityName.contains("User")) {
-            Map<String, Object> mockRelated = new HashMap<>();
-            mockRelated.put("id", "user-controller-456");
-            mockRelated.put("name", "UserController");
-            mockRelated.put("signature", "public class UserController");
-            mockRelated.put("filePath", "/src/main/java/com/example/UserController.java");
-            mockRelated.put("startLine", 20);
-            mockRelated.put("endLine", 150);
-            mockRelated.put("relationshipType", "DEPENDS_ON");
-            results.add(mockRelated);
+        // Check if Neo4jContextProvider is initialized
+        if (!com.tekion.javaastkg.adk.context.Neo4jContextProvider.isInitialized()) {
+            throw new IllegalStateException("Neo4jContextProvider not initialized. Cannot find related entities without proper Neo4j connection.");
         }
         
-        log.debug("🔗 Found {} related entities", results.size());
-        return results;
+        // Use real Neo4j implementation
+        try {
+            var driver = com.tekion.javaastkg.adk.context.Neo4jContextProvider.getNeo4jDriver();
+            var sessionConfig = com.tekion.javaastkg.adk.context.Neo4jContextProvider.getSessionConfig();
+            
+            try (var session = driver.session(sessionConfig)) {
+                String cypherQuery = """
+                    MATCH (start)
+                    WHERE start.name = $entityName OR start.id = $entityName
+                    MATCH (start)-[r*1..$maxHops]-(related)
+                    RETURN DISTINCT related.id as id, related.name as name, related.signature as signature,
+                           related.filePath as filePath, related.startLine as startLine, 
+                           related.endLine as endLine, type(r[0]) as relationshipType
+                    LIMIT 50
+                    """;
+                
+                var result = session.run(cypherQuery, Map.of(
+                    "entityName", entityName,
+                    "maxHops", maxHops
+                ));
+                
+                List<Map<String, Object>> results = new ArrayList<>();
+                while (result.hasNext()) {
+                    var record = result.next();
+                    Map<String, Object> recordMap = new HashMap<>();
+                    for (String key : record.keys()) {
+                        recordMap.put(key, record.get(key).asObject());
+                    }
+                    results.add(recordMap);
+                }
+                
+                log.debug("🔗 Found {} related entities", results.size());
+                return results;
+            }
+        } catch (Exception e) {
+            log.error("❌ Failed to find related entities", e);
+            throw new RuntimeException("Failed to find related entities", e);
+        }
     }
     
     /**
@@ -83,17 +133,34 @@ public class Neo4jService {
         
         log.debug("📚 Getting documentation for entity: {}", entityId);
         
-        // TODO: Implement actual documentation retrieval from Neo4j
-        // For now, return mock documentation
-        if (entityId.contains("user-service")) {
-            return "Service class responsible for user management operations including authentication, profile management, and user preferences.";
+        // Check if Neo4jContextProvider is initialized
+        if (!com.tekion.javaastkg.adk.context.Neo4jContextProvider.isInitialized()) {
+            throw new IllegalStateException("Neo4jContextProvider not initialized. Cannot get documentation without proper Neo4j connection.");
         }
         
-        if (entityId.contains("user-controller")) {
-            return "REST controller that exposes user-related endpoints for the web API.";
+        // Use real Neo4j implementation
+        try {
+            var driver = com.tekion.javaastkg.adk.context.Neo4jContextProvider.getNeo4jDriver();
+            var sessionConfig = com.tekion.javaastkg.adk.context.Neo4jContextProvider.getSessionConfig();
+            
+            try (var session = driver.session(sessionConfig)) {
+                String cypherQuery = """
+                    MATCH (entity {id: $entityId})-[:HAS_DESCRIPTION]->(desc:Description)
+                    RETURN desc.content as documentation
+                    """;
+                
+                var result = session.run(cypherQuery, Map.of("entityId", entityId));
+                
+                if (result.hasNext()) {
+                    return result.next().get("documentation").asString();
+                }
+                
+                return null;
+            }
+        } catch (Exception e) {
+            log.error("❌ Failed to get documentation", e);
+            throw new RuntimeException("Failed to get documentation", e);
         }
-        
-        return null;
     }
     
     /**
@@ -130,130 +197,38 @@ public class Neo4jService {
         
         log.debug("🔍 Executing Cypher query: {}", cypherQuery);
         
-        // Mock implementation for structural exploration
-        if (cypherQuery.contains("MATCH (n {id: $nodeId})") && cypherQuery.contains("RETURN n.id as id")) {
-            return getMockNodeDetails(parameters);
+        // Check if Neo4jContextProvider is initialized
+        if (!com.tekion.javaastkg.adk.context.Neo4jContextProvider.isInitialized()) {
+            throw new IllegalStateException("Neo4jContextProvider not initialized. Cannot execute Cypher queries without proper Neo4j connection.");
         }
         
-        if (cypherQuery.contains("MATCH (n {id: $nodeId})-[r]") && cypherQuery.contains("RETURN n.id as sourceId")) {
-            return getMockRelationships(parameters);
-        }
-        
-        // TODO: Implement actual Cypher query execution for production
-        return List.of();
-    }
-    
-    /**
-     * Mock node details for structural exploration testing
-     */
-    private List<Map<String, Object>> getMockNodeDetails(Map<String, Object> parameters) {
-        String nodeId = (String) parameters.get("nodeId");
-        
-        if (nodeId == null) return List.of();
-        
-        List<Map<String, Object>> results = new ArrayList<>();
-        
-        // Create mock node based on ID pattern
-        Map<String, Object> node = new HashMap<>();
-        node.put("id", nodeId);
-        node.put("labels", List.of("Class"));
-        
-        if (nodeId.contains("Service")) {
-            node.put("name", nodeId.replace("-", ""));
-            node.put("type", "CLASS");
-            node.put("className", nodeId.replace("-", ""));
-            node.put("packageName", "com.example.service");
-            node.put("fullName", "com.example.service." + nodeId.replace("-", ""));
-            node.put("signature", "public class " + nodeId.replace("-", ""));
-            node.put("sourceFile", "/src/main/java/com/example/service/" + nodeId.replace("-", "") + ".java");
-            node.put("lineNumber", 15);
-        } else if (nodeId.contains("Repository")) {
-            node.put("name", nodeId.replace("-", ""));
-            node.put("type", "CLASS");
-            node.put("className", nodeId.replace("-", ""));
-            node.put("packageName", "com.example.repository");
-            node.put("fullName", "com.example.repository." + nodeId.replace("-", ""));
-            node.put("signature", "public interface " + nodeId.replace("-", ""));
-            node.put("sourceFile", "/src/main/java/com/example/repository/" + nodeId.replace("-", "") + ".java");
-            node.put("lineNumber", 8);
-        } else if (nodeId.contains("Controller")) {
-            node.put("name", nodeId.replace("-", ""));
-            node.put("type", "CLASS");
-            node.put("className", nodeId.replace("-", ""));
-            node.put("packageName", "com.example.controller");
-            node.put("fullName", "com.example.controller." + nodeId.replace("-", ""));
-            node.put("signature", "@RestController public class " + nodeId.replace("-", ""));
-            node.put("sourceFile", "/src/main/java/com/example/controller/" + nodeId.replace("-", "") + ".java");
-            node.put("lineNumber", 12);
-        } else {
-            // Generic mock
-            node.put("name", nodeId);
-            node.put("type", "CLASS");
-            node.put("className", nodeId);
-            node.put("packageName", "com.example");
-            node.put("fullName", "com.example." + nodeId);
-            node.put("signature", "public class " + nodeId);
-            node.put("sourceFile", "/src/main/java/com/example/" + nodeId + ".java");
-            node.put("lineNumber", 10);
-        }
-        
-        results.add(node);
-        return results;
-    }
-    
-    /**
-     * Mock relationships for structural exploration testing
-     */
-    private List<Map<String, Object>> getMockRelationships(Map<String, Object> parameters) {
-        String nodeId = (String) parameters.get("nodeId");
-        
-        if (nodeId == null) return List.of();
-        
-        List<Map<String, Object>> results = new ArrayList<>();
-        
-        // Create mock relationships based on node type
-        if (nodeId.contains("Service")) {
-            // Service -> Repository relationship
-            Map<String, Object> rel1 = new HashMap<>();
-            rel1.put("sourceId", nodeId);
-            rel1.put("targetId", nodeId.replace("Service", "Repository"));
-            rel1.put("relationshipType", "DEPENDS_ON");
-            rel1.put("weight", 1.0);
-            rel1.put("properties", Map.of("strength", "high"));
-            results.add(rel1);
+        // Use real Neo4j implementation
+        try {
+            var driver = com.tekion.javaastkg.adk.context.Neo4jContextProvider.getNeo4jDriver();
+            var sessionConfig = com.tekion.javaastkg.adk.context.Neo4jContextProvider.getSessionConfig();
             
-            // Service -> another Service (if it makes sense)
-            if (!nodeId.contains("User")) {
-                Map<String, Object> rel2 = new HashMap<>();
-                rel2.put("sourceId", nodeId);
-                rel2.put("targetId", "UserService");
-                rel2.put("relationshipType", "CALLS");
-                rel2.put("weight", 0.8);
-                rel2.put("properties", Map.of("frequency", "medium"));
-                results.add(rel2);
+            try (var session = driver.session(sessionConfig)) {
+                var result = session.run(cypherQuery, parameters);
+                
+                List<Map<String, Object>> results = new ArrayList<>();
+                while (result.hasNext()) {
+                    var record = result.next();
+                    Map<String, Object> recordMap = new HashMap<>();
+                    for (String key : record.keys()) {
+                        recordMap.put(key, record.get(key).asObject());
+                    }
+                    results.add(recordMap);
+                }
+                
+                log.debug("✅ Cypher query executed successfully, returned {} results", results.size());
+                return results;
             }
-        } else if (nodeId.contains("Controller")) {
-            // Controller -> Service relationship
-            Map<String, Object> rel1 = new HashMap<>();
-            rel1.put("sourceId", nodeId);
-            rel1.put("targetId", nodeId.replace("Controller", "Service"));
-            rel1.put("relationshipType", "USES_FIELD");
-            rel1.put("weight", 1.0);
-            rel1.put("properties", Map.of("injection", "autowired"));
-            results.add(rel1);
-        } else if (nodeId.contains("Repository")) {
-            // Repository might extend another interface
-            Map<String, Object> rel1 = new HashMap<>();
-            rel1.put("sourceId", nodeId);
-            rel1.put("targetId", "BaseRepository");
-            rel1.put("relationshipType", "EXTENDS");
-            rel1.put("weight", 1.0);
-            rel1.put("properties", Map.of("type", "interface"));
-            results.add(rel1);
+        } catch (Exception e) {
+            log.error("❌ Failed to execute Cypher query: {}", cypherQuery, e);
+            throw new RuntimeException("Failed to execute Cypher query", e);
         }
-        
-        return results;
     }
+    
     
     /**
      * 📊 Get entity statistics
